@@ -10,15 +10,18 @@ class DeepQNetwork(nn.Module):
     def __init__(self, 
                 state_size: int,
                 action_size: int,
-                lr: float):
+                lr: float,
+                seed: int):
         '''
         Parameters
         ----------
         state_size: state size
         action_size: action size, = #actions
         lr: learning rate
+        seed: random seed
         '''
         super().__init__()
+        torch.manual_seed(seed)
         self.fc1 = nn.Linear(state_size, 64)
         self.fc2 = nn.Linear(64, 64)
         self.fc3 = nn.Linear(64, action_size)

@@ -1,16 +1,16 @@
-import gym
 import numpy as np
+import gym
 import torch
 
 from collections import deque
 from typing import List
 import sys
+from agent import Agent
 from os.path import dirname, join, realpath
 dir_path = dirname(dirname(realpath(__file__)))
 sys.path.insert(1, join(dir_path, 'utils'))
 import render
 import plot
-from agent import Agent
 
 
 def dqn(env,
@@ -29,7 +29,7 @@ def dqn(env,
         verbose: bool=False,
         verbose_freq: int=50,
         save_model: bool=False,
-        save_video: bool=False,
+        render_video: bool=False,
         seed: int=0) -> List[float]:
     '''
     Parameters
@@ -49,8 +49,11 @@ def dqn(env,
     termination: allows algorithm ends when total reward >= @termination
     verbose: whether to display result
     verbose_freq: display every @verbose_freq
+    save_model: whether to save model
+    render_video: whether to render output as video
     seed: random seed
     '''
+    env.seed(seed)
     state_size =  env.observation_space.shape[0]
     action_size = env.action_space.n
     epsilon_decay = (epsilon_init - epsilon_final) / (n_eps / 2)
@@ -94,10 +97,10 @@ def dqn(env,
             if (save_model):
                 assert model_path, 'Model path needed!'
                 agent.save(model_path)
-            if (save_video):
+            if (render_video):
                 assert model_path, 'Model path needed!'
                 assert video_path, 'video path needed!'
-                render.play_video_of_model(agent, env, model_path, video_path)
+                render.save_video(env, agent, model_path, video_path)
             break
     return total_reward_list
 
@@ -120,36 +123,26 @@ if __name__ == '__main__':
     verbose = True
     verbose_freq = 100
     save_model = True
-    save_video = True
+    render_video = True
+    seed = 1
 
-    # total_reward_list = dqn(env,
-    #                         epsilon_init,
-    #                         epsilon_final,
-    #                         gamma, lr,
-    #                         buffer_size,
-    #                         batch_size,
-    #                         update_freq,
-    #                         tau,
-    #                         model_path,
-    #                         video_path,
-    #                         n_eps,
-    #                         termination,
-    #                         verbose,
-    #                         verbose_freq,
-    #                         save_model,
-    #                         save_video)
+    total_reward_list = dqn(env,
+                            epsilon_init,
+                            epsilon_final,
+                            gamma, lr,
+                            buffer_size,
+                            batch_size,
+                            update_freq,
+                            tau,
+                            model_path,
+                            video_path,
+                            n_eps,
+                            termination,
+                            verbose,
+                            verbose_freq,
+                            save_model,
+                            render_video,
+                            seed)
 
-    state_size =  env.observation_space.shape[0]
-    action_size = env.action_space.n
-    agent = Agent(state_size, 
-                action_size,
-                epsilon_init,
-                epsilon_final,
-                gamma, lr,
-                buffer_size,
-                batch_size,
-                update_freq,
-                tau,
-                0)
-    render.play_video_of_model(env, agent, model_path, video_path)
-    render.play_video(video_path)
+    image_path = f'../outputs/images/dqn-{env_name}.png'
+    plot.total_reward(total_reward_list, image_path)

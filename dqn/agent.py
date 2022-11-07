@@ -53,8 +53,8 @@ class Agent:
         self.current_step = 0
 
         self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-        self.Qnet = DeepQNetwork(state_size, action_size, lr).to(self.device)
-        self.Qnet_target = DeepQNetwork(state_size, action_size, lr).to(self.device)
+        self.Qnet = DeepQNetwork(state_size, action_size, lr, seed).to(self.device)
+        self.Qnet_target = DeepQNetwork(state_size, action_size, lr, seed).to(self.device)
         self.optimizer = opt.Adam(self.Qnet.parameters(), lr=lr)
 
 
@@ -117,7 +117,7 @@ class Agent:
             next_states = torch.from_numpy(np.vstack(next_states)).float().to(self.device)
             terminated = torch.from_numpy(np.vstack(terminated).astype(np.uint8)).float().to(self.device)
 
-            q_targets_next = torch.max(self.Qnet_target(next_states), dim=1)[0]
+            q_targets_next = self.Qnet_target(next_states).detach().max(1)[0].unsqueeze(1)
             q_targets = rewards + self.gamma * q_targets_next * (1 - terminated)
             q_expected = self.Qnet(states).gather(1, actions)
             
