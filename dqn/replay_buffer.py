@@ -13,7 +13,6 @@ class Experience(NamedTuple):
     terminated: bool
 
 
-
 class ReplayBuffer:
     '''
     Replay buffer class
