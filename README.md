@@ -1,1 +1,1 @@
-# deep-rl-implementations
+# Deep RL Zoo
