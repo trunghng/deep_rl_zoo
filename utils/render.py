@@ -1,9 +1,4 @@
 from gym.wrappers.monitoring import video_recorder
-from IPython.display import HTML
-from IPython import display
-import base64, io
-from os.path import splitext
-import glob
 
         
 def save_video(env, agent, model_path: str, video_path: str):
@@ -14,7 +9,6 @@ def save_video(env, agent, model_path: str, video_path: str):
     ----------
     env
     agent
-    model_path: model path
     video_path: video path
     '''
     video = video_recorder.VideoRecorder(env, path=video_path)
