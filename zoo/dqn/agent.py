@@ -274,9 +274,9 @@ class DoubleDQN(DQN):
                 buffer_size: int,
                 batch_size: int,
                 train_freq: int,
-                target_update: int,
+                update_target: int,
                 tau: float,
-                n_eps: int,
+                num_episodes: int,
                 logging_interval: int,
                 termination: float,
                 print_freq: int,
@@ -287,9 +287,9 @@ class DoubleDQN(DQN):
                 seed: int,
                 device: str):
         super().__init__(env_name, epsilon_init, epsilon_final, epsilon_decay, gamma,
-                        lr, buffer_size, batch_size, train_freq, target_update, 
-                        tau, n_eps, logging_interval, termination, print_freq, save_model, 
-                        render_video, plot, atari, seed, device)
+                        lr, buffer_size, batch_size, train_freq, update_target, 
+                        tau, num_episodes, logging_interval, termination, print_freq,
+                        save_model, render_video, plot, atari, seed, device)
 
 
     def compute_td_loss(self, states, actions, rewards, next_states, terminated):

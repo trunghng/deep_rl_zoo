@@ -8,8 +8,8 @@ def get_args():
 
     parser.add_argument('-a', '--agent', type=str, default='DQN',
                         help='Agent name')
-    parser.add_argument('-e', '--env-name', type=str, default='PongNoFrameskip-v4',
-                        help='Enviroment name')
+    parser.add_argument('-e', '--env-name', type=str, choices=[1, 2],
+                        help='Enviroment name:\n 0: None\n 1: LunarLander-v2\n 2: PongNoFrameskip-v4')
     parser.add_argument('-ei', '--epsilon-init', type=float, default=1.0,
                         help='Initial value of epsilon')
     parser.add_argument('-ef', '--epsilon-final', type=float, default=0.01,
@@ -54,12 +54,12 @@ def get_args():
                         help='To enable evaluation')
     parser.add_argument('-m', '--model-path', type=str,
                         help='Model path to load')
-    parser.add_argument('-d', '--default-env', type=int, choices=[0, 1, 2],
-        help='Default experiments with default settings:\n 0: None\n 1: LunarLander-v2\n 2: PongNoFrameskip-v4')
+    parser.add_argument('-d', '--default-exp', type=int, choices=[0, 1, 2],
+                        help='Default experiments with default settings')
 
     args = parser.parse_args()
 
-    if args.default_env == 1:
+    if args.default_exp == 1:
         args.agent = 'DQN'
         args.env_name = 'LunarLander-v2'
         args.epsilon_init = 1
@@ -81,7 +81,7 @@ def get_args():
         args.plot = True
         args.atari = False
         args.seed = 1
-    elif args.default_env == 2:
+    elif args.default_exp == 2:
         args.agent = 'DQN'
         args.env_name = 'PongNoFrameskip-v4'
         args.epsilon_init = 1
@@ -97,7 +97,7 @@ def get_args():
         args.num_episodes = 600
         args.logging_interval = 10
         args.termination = 17
-        args.print_freq = 5
+        args.print_freq = 1
         args.save_model = True
         args.render_video = True
         args.plot = True
@@ -107,7 +107,7 @@ def get_args():
     args.cuda = not args.use_cuda and torch.cuda.is_available()
     args.device = torch.device('cuda:0' if args.cuda else 'cpu')
     
-    del args.default_env
+    del args.default_exp
     del args.cuda
     del args.use_cuda
 
