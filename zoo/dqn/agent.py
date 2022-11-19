@@ -11,7 +11,8 @@ from collections import deque
 from os.path import basename, splitext
 from network import DeepQNet, CNNDeepQNet, DuelingQNet
 from replay_buffer import ReplayBuffer
-from utils import plot, save_video
+from utils import plot
+from gym.wrappers.monitoring import video_recorder
 
 
 class DQN:
@@ -80,9 +81,9 @@ class DQN:
         else:
             replay_txt = 'experience replay'
             self.buffer = ReplayBuffer(args.buffer_size)
-        print(f'Using DQN with:\n- Network architecture: {architecture_txt}\
-                \n- TD error computation: {td_error_cal_txt}\
-                \n- Replay buffer type: {replay_txt}')
+        print(f'Using DQN with:\n\t- Network architecture: {architecture_txt}\
+                \n\t- TD error computation: {td_error_cal_txt}\
+                \n\t- Replay buffer type: {replay_txt}')
 
         self.optimizer = opt.Adam(self.Qnet.parameters(), lr=args.lr)
         self.action_space = range(n_actions)
@@ -247,7 +248,7 @@ class DQN:
             if avg_score >= self.termination:
                 print(f'Environment solved in {ep} episodes!')
                 if self.model_path:
-                    self.save()
+                    self._save()
                     self.test(self.model_path, self.render_video)
                 break
 
@@ -266,10 +267,10 @@ class DQN:
         model_path: model path to load
         render_video: whether to render output video
         '''
-        self._load(f'./models/{model_path}')
+        self._load(f'/models/{model_path}')
         if render_video:
             video_path = f'/outputs/videos/{splitext(basename(model_path))[0]}.mp4'
-            video = video_recorder.VideoRecorder(env, path=video_path)
+            video = video_recorder.VideoRecorder(self.env, path=video_path)
             __render = lambda:\
                 self.env.render(mode='rgb_array');\
                 video.capture_frame()
