@@ -1,27 +1,30 @@
+import sys
+from os.path import dirname, join, realpath
+dir_path = dirname(dirname(realpath(__file__)))
+sys.path.insert(1, join(dir_path, '..'))
+from common.wrappers import make_atari, wrap_deepmind, wrap_pytorch
 import gym
-from arguments import get_args
-from agent import DQN, DoubleDQN
+import cmds
+from agent import DQN
 
 
 def main():
-    args = get_args()
-    agent_name = args.agent
-    evaluate = args.eval
-    model_path = args.model_path
+    args = cmds.get_args()
 
-    del args.agent
-    del args.eval
-    del args.model_path
+    if args.atari:
+        env = make_atari(args.env_name)
+        env = wrap_deepmind(env)
+        env = wrap_pytorch(env)
+        state_dim =  env.observation_space.shape
+        n_actions = env.action_space.n
+    else:
+        env = gym.make(args.env_name)
+        state_dim =  env.observation_space.shape[0]
+        n_actions = env.action_space.n
 
-    args_ = vars(args)
-    
-    if agent_name == 'DQN':
-        agent = DQN(**args_)
-    elif agent_name == 'DoubleDQN':
-        agent = DoubleDQN(**args_)
-
-    if evaluate:
-        agent.test(model_path)
+    agent = DQN(env, state_dim, n_actions, args)
+    if args.eval:
+        agent.test(args.model_path)
     else:
         agent.train()
 

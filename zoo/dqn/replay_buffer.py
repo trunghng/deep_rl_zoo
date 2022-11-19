@@ -18,16 +18,12 @@ class ReplayBuffer:
     Replay buffer class
     '''
 
-    def __init__(self,
-                buffer_size: int,
-                seed: int):
+    def __init__(self, buffer_size: int):
         '''
         Parameters
         ----------
         buffer_size: buffer_size
-        seed: random seed
         '''
-        random.seed(seed)
         self.memory = deque(maxlen=buffer_size)
 
 

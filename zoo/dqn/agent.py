@@ -1,8 +1,3 @@
-import sys
-from os.path import dirname, join, realpath
-dir_path = dirname(dirname(realpath(__file__)))
-sys.path.insert(1, join(dir_path, '..'))
-
 import gym
 import random
 import numpy as np
@@ -13,10 +8,10 @@ import math
 
 from typing import List, Tuple
 from collections import deque
-from network import DeepQNet, CNNDeepQNet
+from os.path import basename, splitext
+from network import DeepQNet, CNNDeepQNet, DuelingQNet
 from replay_buffer import ReplayBuffer
 from utils import plot, save_video
-from common.wrappers import make_atari, wrap_deepmind, wrap_pytorch
 
 
 class DQN:
@@ -25,31 +20,16 @@ class DQN:
     '''
 
     def __init__(self,
-                env_name: str,
-                epsilon_init: float,
-                epsilon_final: float,
-                epsilon_decay: float,
-                gamma: float,
-                lr: float,
-                buffer_size: int,
-                batch_size: int,
-                train_freq: int,
-                update_target: int,
-                tau: float,
-                num_episodes: int,
-                logging_interval: int,
-                termination: float,
-                print_freq: int,
-                save_model: bool,
-                render_video: bool,
-                plot: bool,
-                atari: bool,
-                seed: int,
-                device):
+                env,
+                state_dim: List[int],
+                n_actions: int,
+                args):
         '''
         Parameters
         ----------
         env_name: OpenAI's environment name
+        state_dim: state dimensionality
+        n_actions: number of actions
         epsilon_init: initial value for exploration param, epsilon, linearly annealing
         epsilon_final: final value for epsilon linearly annealing
         gamma: discount factor
@@ -70,57 +50,79 @@ class DQN:
         seed: random seed
         device: device type
         '''
-        self.device = device
-        if atari:
-            env = make_atari(env_name)
-            env = wrap_deepmind(env)
-            self.env = wrap_pytorch(env)
-            state_dim =  self.env.observation_space.shape
-            n_actions = self.env.action_space.n
-            self.Qnet = CNNDeepQNet(state_dim, n_actions, seed).to(self.device)
-            self.Qnet_target = CNNDeepQNet(state_dim, n_actions, seed).to(self.device)
+        self.env = env
+        self.device = args.device
+        # Select network architecture
+        if args.dueling:
+            architecture_txt = 'Dueling Q-network'
+            network = DuelingQNet
+        elif args.atari:
+            architecture_txt = 'CNN Q-network'
+            network = CNNDeepQNet
         else:
-            self.env = gym.make(env_name)
-            state_dim =  self.env.observation_space.shape[0]
-            n_actions = self.env.action_space.n
-            self.Qnet = DeepQNet(state_dim, n_actions, seed).to(self.device)
-            self.Qnet_target = DeepQNet(state_dim, n_actions, seed).to(self.device)
+            architecture_txt = 'Q-network'
+            network = DeepQNet
+        self.Qnet = network(state_dim, n_actions).to(self.device)
+        self.Qnet_target = network(state_dim, n_actions).to(self.device)
 
-        self.optimizer = opt.Adam(self.Qnet.parameters(), lr=lr)
+        # Select Q-learning update type
+        if args.double:
+            td_error_cal_txt = 'Double Q-learning'
+            self._compute_td_loss_ = self._compute_td_loss_double_q
+        else:
+            td_error_cal_txt = 'Q-learning'
+            self._compute_td_loss_ = self._compute_td_loss
+
+        # Select replay buffer type
+        if args.prioritized_replay:
+            replay_txt = 'prioritized replay'
+            pass
+        else:
+            replay_txt = 'experience replay'
+            self.buffer = ReplayBuffer(args.buffer_size)
+        print(f'Using DQN with:\n- Network architecture: {architecture_txt}\
+                \n- TD error computation: {td_error_cal_txt}\
+                \n- Replay buffer type: {replay_txt}')
+
+        self.optimizer = opt.Adam(self.Qnet.parameters(), lr=args.lr)
         self.action_space = range(n_actions)
-        self.epsilon_init = epsilon_init
-        self.epsilon_final = epsilon_final
-        self.epsilon_decay = epsilon_decay
-        self.gamma = gamma
-        self.batch_size = batch_size
-        self.buffer = ReplayBuffer(buffer_size, seed)
-        self.train_freq = train_freq
-        self.update_target = update_target
-        self.tau = tau
-        self.n_eps = num_episodes
-        self.logging_interval = logging_interval
-        self.termination = termination
-        self.print_freq = print_freq
-        self.model_path = f'/models/{self.name()}-{env_name}.pth' \
-            if save_model else None
-        self.plot = plot
-        random.seed(seed)
-        self.env.seed(seed)
+        self.epsilon_init = args.epsilon_init
+        self.epsilon_final = args.epsilon_final
+        self.epsilon_decay = args.epsilon_decay
+        self.gamma = args.gamma
+        self.batch_size = args.batch_size
+        self.train_freq = args.train_freq
+        self.update_target = args.update_target
+        self.tau = args.tau
+        self.n_eps = args.num_episodes
+        self.logging_interval = args.logging_interval
+        self.termination = args.termination
+        self.print_freq = args.print_freq
+        self.model_path = f'/models/{self._name()}-{args.env_name}.pth' \
+            if args.save_model else None
+        self.plot = args.plot
+        self._seed(args.seed)
         self.step = 0
 
 
-    def name(self) -> str:
+    def _seed(self, seed: int):
+        random.seed(seed)
+        torch.manual_seed(seed)
+        self.env.seed(seed)
+
+
+    def _name(self) -> str:
         return type(self).__name__
 
 
-    def anneal_epsilon(self, ep: int):
+    def _anneal_epsilon(self, ep: int):
         '''
         Epsilon linearly annealing
         '''
         return self.epsilon_final + (self.epsilon_init - self.epsilon_final) * math.exp(-1. * ep /self.epsilon_decay)
 
 
-    def store_transition(self,
+    def _store_transition(self,
                         state: np.ndarray,
                         action: int,
                         reward: float,
@@ -140,7 +142,7 @@ class DQN:
         self.buffer.add(state, action, reward, next_state, terminated)
 
 
-    def behave(self, state: np.ndarray, epsilon: float=0) -> int:
+    def _act(self, state: np.ndarray, epsilon: float=0) -> int:
         '''
         Select action according to the behavior policy
             here we are using epsilon-greedy as behavior policy
@@ -157,7 +159,10 @@ class DQN:
         return action
 
 
-    def compute_td_loss(self, states, actions, rewards, next_states, terminated):
+    def _compute_td_loss(self, states, actions, rewards, next_states, terminated):
+        '''
+        Compute TD error error according to Q-learning
+        '''
         q_target_next = torch.max(self.Qnet_target(next_states), dim=1)[0].unsqueeze(1)
         q_target = rewards + self.gamma * q_target_next * (1 - terminated)
         q_expected = self.Qnet(states).gather(1, actions)
@@ -165,8 +170,20 @@ class DQN:
         loss = F.mse_loss(q_expected, q_target)
         return loss
 
+    def _compute_td_loss_double_q(self, states, actions, rewards, next_states, terminated):
+        '''
+        Compute TD error according to double Q-learning
+        '''
+        greedy_actions = torch.argmax(self.Qnet(next_states), dim=1).unsqueeze(1)
+        q_target_greedy = self.Qnet_target(next_states).gather(1, greedy_actions)
+        q_target = rewards + self.gamma * q_target_greedy * (1 - terminated)
+        q_expected = self.Qnet(states).gather(1, actions)
 
-    def learn(self):
+        loss = F.mse_loss(q_expected, q_target)
+        return loss
+
+
+    def _learn(self):
         if self.step % self.train_freq == 0 \
                 and len(self.buffer) >= self.batch_size:
             states, actions, rewards, next_states, terminated = self.buffer.sample(self.batch_size)
@@ -176,19 +193,18 @@ class DQN:
             next_states = torch.from_numpy(next_states).float().to(self.device)
             terminated = torch.from_numpy(np.vstack(terminated).astype(np.uint8)).float().to(self.device)
 
-            loss = self.compute_td_loss(states, actions, rewards, next_states, terminated)
+            loss = self._compute_td_loss_(states, actions, rewards, next_states, terminated)
 
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
 
         if self.step % self.update_target == 0:
-            for target_param, param in zip(self.Qnet_target.parameters(), self.Qnet.parameters()):
-                target_param.data.copy_(self.tau * param.data + (1.0 - self.tau) * target_param.data)
+            self.Qnet_target.load_state_dict(self.Qnet.state_dict())
         self.step += 1
 
 
-    def load(self, model_path: str) -> None:
+    def _load(self, model_path: str) -> None:
         '''
         Load checkpoint
         '''
@@ -196,7 +212,7 @@ class DQN:
         self.Qnet.eval()
 
 
-    def save(self) -> None:
+    def _save(self) -> None:
         '''
         Save model
         '''
@@ -210,16 +226,16 @@ class DQN:
         for ep in range(1, self.n_eps):
             state = self.env.reset()
             total_reward = 0
-            epsilon = self.anneal_epsilon(ep)
+            epsilon = self._anneal_epsilon(ep)
 
             while True:
-                action = self.behave(state, epsilon)
+                action = self._act(state, epsilon)
                 next_state, reward, terminated, _ = self.env.step(action)
                 total_reward += reward
                 if terminated:
                     break
-                self.store_transition(state, action, reward, next_state, terminated)
-                self.learn()
+                self._store_transition(state, action, reward, next_state, terminated)
+                self._learn()
                 state = next_state
 
             scores.append(total_reward)
@@ -232,11 +248,7 @@ class DQN:
                 print(f'Environment solved in {ep} episodes!')
                 if self.model_path:
                     self.save()
-                if self.render_video:
-                    try:
-                        save_video(self.env, self, self.model_path)
-                    except Exception:
-                        print('Model path needed!')
+                    self.test(self.model_path, self.render_video)
                 break
 
         if self.plot:
@@ -247,56 +259,27 @@ class DQN:
         return scores, avg_scores
 
 
-    def test(self, model_path: str):
-        self.load(f'./models/{model_path}')
+    def test(self, model_path: str, render_video: bool=False):
+        '''
+        Parameters
+        ----------
+        model_path: model path to load
+        render_video: whether to render output video
+        '''
+        self._load(f'./models/{model_path}')
+        if render_video:
+            video_path = f'/outputs/videos/{splitext(basename(model_path))[0]}.mp4'
+            video = video_recorder.VideoRecorder(env, path=video_path)
+            __render = lambda:\
+                self.env.render(mode='rgb_array');\
+                video.capture_frame()
+        else:
+            __render = lambda: self.env.render()
         state = self.env.reset()
         while True:
-            self.env.render()
-            action = self.behave(state)
+            __render()
+            action = self._act(state)
             state, _, terminated, _ = self.env.step(action)
             if terminated:
                 break
         self.env.close()
-
-
-class DoubleDQN(DQN):
-    '''
-    Double DQN agent class
-    '''
-
-    def __init__(self,
-                env_name: str,
-                epsilon_init: float,
-                epsilon_final: float,
-                epsilon_decay: float,
-                gamma: float,
-                lr: float,
-                buffer_size: int,
-                batch_size: int,
-                train_freq: int,
-                update_target: int,
-                tau: float,
-                num_episodes: int,
-                logging_interval: int,
-                termination: float,
-                print_freq: int,
-                save_model: bool,
-                render_video: bool,
-                plot: bool,
-                atari: bool,
-                seed: int,
-                device: str):
-        super().__init__(env_name, epsilon_init, epsilon_final, epsilon_decay, gamma,
-                        lr, buffer_size, batch_size, train_freq, update_target, 
-                        tau, num_episodes, logging_interval, termination, print_freq,
-                        save_model, render_video, plot, atari, seed, device)
-
-
-    def compute_td_loss(self, states, actions, rewards, next_states, terminated):
-        greedy_actions = torch.argmax(self.Qnet(next_states), dim=1).unsqueeze(1)
-        q_target_greedy = self.Qnet_target(next_states).gather(1, greedy_actions)
-        q_target = rewards + self.gamma * q_target_greedy * (1 - terminated)
-        q_expected = self.Qnet(states).gather(1, actions)
-
-        loss = F.mse_loss(q_expected, q_target)
-        return loss

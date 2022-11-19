@@ -32,7 +32,7 @@ def save_video(env, agent, model_path: str):
     while True:
         frame = env.render(mode='rgb_array')
         video.capture_frame()
-        action = agent.behave(state)
+        action = agent.act(state)
         next_state, reward, terminated, _ = env.step(action)
         if terminated:
             break

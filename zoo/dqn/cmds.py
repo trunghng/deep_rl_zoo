@@ -6,62 +6,64 @@ def get_args():
     parser = argparse.ArgumentParser(description='Deep Q-Learning', 
                                     formatter_class=argparse.RawTextHelpFormatter)
 
-    parser.add_argument('-a', '--agent', type=str, default='DQN',
-                        help='Agent name')
-    parser.add_argument('-e', '--env-name', type=str, choices=[1, 2],
-                        help='Enviroment name:\n 0: None\n 1: LunarLander-v2\n 2: PongNoFrameskip-v4')
-    parser.add_argument('-ei', '--epsilon-init', type=float, default=1.0,
+    parser.add_argument('--env-name', type=str,
+                        help='Enviroment name')
+    parser.add_argument('--atari', action='store_true',
+                        help='Whether to use atari environment')
+    parser.add_argument('--eval', action='store_true',
+                        help='To enable evaluation')
+    parser.add_argument('--model-path', type=str,
+                        help='Model path to load')
+    parser.add_argument('--double', action='store_true',
+                        help='Whether to use double Q-network')
+    parser.add_argument('--dueling', action='store_true',
+                        help='Whether to use dueling Q-network')
+    parser.add_argument('--prioritized-replay', action='store_true',
+                        help='Whether to use prioritized replay')
+    parser.add_argument('--epsilon-init', type=float, default=1.0,
                         help='Initial value of epsilon')
-    parser.add_argument('-ef', '--epsilon-final', type=float, default=0.01,
+    parser.add_argument('--epsilon-final', type=float, default=0.01,
                         help='Final value of epsilon')
-    parser.add_argument('-ed', '--epsilon-decay', type=float, default=100,
+    parser.add_argument('--epsilon-decay', type=float, default=100,
                         help='Final value of epsilon')
-    parser.add_argument('-g', '--gamma', type=float, default=0.99,
+    parser.add_argument('--gamma', type=float, default=0.99,
                         help='Discount factor')
-    parser.add_argument('-lr', '--lr', type=float, default=0.0001,
+    parser.add_argument('--lr', type=float, default=0.0001,
                         help='Learning rate')
-    parser.add_argument('-bs', '--batch-size', type=int, default=32,
+    parser.add_argument('--batch-size', type=int, default=32,
                         help='Batch size')
-    parser.add_argument('-rs', '--buffer-size', type=int, default=100000,
+    parser.add_argument('--buffer-size', type=int, default=100000,
                         help='Maximum memory buffer size')
-    parser.add_argument('-t', '--train-freq', type=int, default=1,
+    parser.add_argument('--train-freq', type=int, default=1,
                         help='Number of steps between optimization steps')
-    parser.add_argument('-u', '--update-target', type=int, default=1000,
+    parser.add_argument('--update-target', type=int, default=1000,
                         help='Interval of target network update')
     parser.add_argument('--tau', type=float, default=0.001,
                         help = 'Soft update parameter')
-    parser.add_argument('-eps', '--num-episodes', type=int, default=600,
+    parser.add_argument('--num-episodes', type=int, default=600,
                         help = 'Maximum number of episodes')
-    parser.add_argument('-l', '--logging-interval', type=int, default=10,
+    parser.add_argument('--logging-interval', type=int, default=10,
                         help = 'Interval of score tracking')
-    parser.add_argument('-te', '--termination', type=int, default=17,
+    parser.add_argument('--termination', type=int, default=17,
                         help = 'Terminal score')
-    parser.add_argument('-v', '--print-freq', type=int, default=10000,
+    parser.add_argument('--print-freq', type=int, default=10000,
                         help='Result display interval')
-    parser.add_argument('-s', '--save-model', action='store_true',
-                        help='To save the model after training')
-    parser.add_argument('-r', '--render-video', action='store_true',
-                        help='To render video output after training')
-    parser.add_argument('-p', '--plot', action='store_true',
+    parser.add_argument('--save-model', action='store_true',
+                        help='Whether to save the model after training')
+    parser.add_argument('--render-video', action='store_true',
+                        help='Whether to render video output after training')
+    parser.add_argument('--plot', action='store_true',
                         help='To plot the result and save')
-    parser.add_argument('--atari', action='store_true',
-                        help='To use atari environment')
     parser.add_argument('--seed', type=int, default=1,
                         help='Random seed')
-    parser.add_argument('-c', '--use-cuda', action='store_true',
+    parser.add_argument('--use-cuda', action='store_true',
                         help='To enable CUDA training')
-    parser.add_argument('--eval', action='store_true',
-                        help='To enable evaluation')
-    parser.add_argument('-m', '--model-path', type=str,
-                        help='Model path to load')
-    parser.add_argument('-d', '--default-exp', type=int, choices=[0, 1, 2],
+    parser.add_argument('--default-exp', type=int, choices=[0, 1, 2],
                         help='Default experiments with default settings')
-
     args = parser.parse_args()
 
     if args.default_exp == 1:
-        args.agent = 'DQN'
-        args.env_name = 'LunarLander-v2'
+        # LunarLander-v2 default experiment
         args.epsilon_init = 1
         args.epsilon_final = 0.01
         args.epsilon_decay = 100
@@ -79,11 +81,9 @@ def get_args():
         args.save_model = True
         args.render_video = True
         args.plot = True
-        args.atari = False
         args.seed = 1
     elif args.default_exp == 2:
-        args.agent = 'DQN'
-        args.env_name = 'PongNoFrameskip-v4'
+        # PongNoFrameskip-v4 default experiment
         args.epsilon_init = 1
         args.epsilon_final = 0.01
         args.epsilon_decay = 100
@@ -97,11 +97,10 @@ def get_args():
         args.num_episodes = 600
         args.logging_interval = 10
         args.termination = 17
-        args.print_freq = 1
+        args.print_freq = 10
         args.save_model = True
         args.render_video = True
         args.plot = True
-        args.atari = True
         args.seed = 1
 
     args.cuda = not args.use_cuda and torch.cuda.is_available()
@@ -110,5 +109,4 @@ def get_args():
     del args.default_exp
     del args.cuda
     del args.use_cuda
-
     return args
