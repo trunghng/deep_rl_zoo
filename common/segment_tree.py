@@ -2,6 +2,10 @@ import operator
 
 
 class SegmentTree(object):
+    '''
+    Segment tree data structure according to
+    https://cp-algorithms.com/data_structures/segment_tree.html
+    '''
 
 
     def __init__(self,
@@ -81,7 +85,6 @@ class SumSegmentTree(SegmentTree):
 
     def __init__(self, size: int):
         super().__init__(size, operator.add, 0)
-
 
 
 class MinSegmentTree(SegmentTree):

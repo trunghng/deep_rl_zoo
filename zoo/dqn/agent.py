@@ -4,15 +4,18 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.optim as opt
-import math
+from gym.wrappers.monitoring import video_recorder
 
+import math
 from typing import List, Tuple
-from collections import deque
-from os.path import basename, splitext
+import sys
+from os.path import dirname, join, realpath, basename, splitext
+dir_path = dirname(dirname(realpath(__file__)))
+sys.path.insert(1, join(dir_path, '..'))
+from common.wrappers import make_atari, wrap_deepmind, wrap_pytorch
 from network import DeepQNet, CNNDeepQNet, DuelingQNet
 from replay_buffer import ReplayBuffer
 from utils import plot
-from gym.wrappers.monitoring import video_recorder
 
 
 class DQN:
@@ -20,17 +23,17 @@ class DQN:
     DQN agent class
     '''
 
-    def __init__(self,
-                env,
-                state_dim: List[int],
-                n_actions: int,
-                args):
+    def __init__(self, args):
         '''
         Parameters
         ----------
         env_name: OpenAI's environment name
-        state_dim: state dimensionality
-        n_actions: number of actions
+        atari: whether to use atari environment
+        eval: whether to enable evaluation
+        dueling: whether to use dueling network
+        double: whether to use double Q-learning
+        tau: smoothness parameter, used for target network soft update
+        prioritized_replay: whether to use prioritized replay buffer
         epsilon_init: initial value for exploration param, epsilon, linearly annealing
         epsilon_final: final value for epsilon linearly annealing
         gamma: discount factor
@@ -38,8 +41,7 @@ class DQN:
         buffer_size: replay buffer size
         batch_size: mini batch size
         train_freq: number of actions selected by the agent between successive SGD updates
-        update_target: 
-        tau: for Q network parameters' soft update
+        update_target: target network update frequency
         num_episodes: number of episodes
         logging_interval: number of episodes to be tracked
         termination: allows algorithm ends when total reward >= @termination
@@ -47,12 +49,15 @@ class DQN:
         save_model: whether to save the model
         render_video: whether to render the final simulation and save it
         plot: whether to plot the result
-        atari: whether to use atari environment
         seed: random seed
         device: device type
         '''
-        self.env = env
+        self.env, state_dim, n_actions = self._create_env(args.env_name, args.atari, args.eval)
         self.device = args.device
+        seed = args.seed
+        random.seed(seed)
+        self.env.seed(seed)
+
         # Select network architecture
         if args.dueling:
             architecture_txt = 'Dueling Q-network'
@@ -63,8 +68,8 @@ class DQN:
         else:
             architecture_txt = 'Q-network'
             network = DeepQNet
-        self.Qnet = network(state_dim, n_actions).to(self.device)
-        self.Qnet_target = network(state_dim, n_actions).to(self.device)
+        self.Qnet = network(state_dim, n_actions, seed).to(self.device)
+        self.Qnet_target = network(state_dim, n_actions, seed).to(self.device)
 
         # Select Q-learning update type
         if args.double:
@@ -76,14 +81,24 @@ class DQN:
 
         # Select replay buffer type
         if args.prioritized_replay:
-            replay_txt = 'prioritized replay'
+            replay_txt = 'prioritized experience replay'
             pass
         else:
             replay_txt = 'experience replay'
-            self.buffer = ReplayBuffer(args.buffer_size)
-        print(f'Using DQN with:\n\t- Network architecture: {architecture_txt}\
-                \n\t- TD error computation: {td_error_cal_txt}\
-                \n\t- Replay buffer type: {replay_txt}')
+            self.buffer = ReplayBuffer(args.buffer_size, seed)
+
+        if args.tau:
+            update_target_txt = 'enabled'
+            self.tau = args.tau
+            self._update_target_network = self._soft_update_target
+        else:
+            update_target_txt = 'disabled'
+            self._update_target_network = self._update_target
+
+        print(f'Using DQN with:\n- Network architecture: {architecture_txt}\
+                \n- TD error computation: {td_error_cal_txt}\
+                \n- Replay buffer type: {replay_txt}\
+                \n- Soft update target: {update_target_txt}')
 
         self.optimizer = opt.Adam(self.Qnet.parameters(), lr=args.lr)
         self.action_space = range(n_actions)
@@ -94,22 +109,34 @@ class DQN:
         self.batch_size = args.batch_size
         self.train_freq = args.train_freq
         self.update_target = args.update_target
-        self.tau = args.tau
         self.n_eps = args.num_episodes
         self.logging_interval = args.logging_interval
         self.termination = args.termination
         self.print_freq = args.print_freq
-        self.model_path = f'/models/{self._name()}-{args.env_name}.pth' \
+        self.model_path = f'./models/{self._name()}-{args.env_name}.pth' \
             if args.save_model else None
+        self.render_video = args.render_video
         self.plot = args.plot
-        self._seed(args.seed)
         self.step = 0
 
 
-    def _seed(self, seed: int):
-        random.seed(seed)
-        torch.manual_seed(seed)
-        self.env.seed(seed)
+    def _create_env(self, env_name: str, atari: bool, evaluate: bool):
+        if evaluate:
+            mode = 'human'
+        else:
+            mode = 'rgb_array'
+
+        if atari:
+            env = make_atari(env_name, mode)
+            env = wrap_deepmind(env)
+            env = wrap_pytorch(env)
+            state_dim =  env.observation_space.shape
+            n_actions = env.action_space.n
+        else:
+            env = gym.make(env_name)
+            state_dim = env.observation_space.shape[0]
+            n_actions = env.action_space.n
+        return env, state_dim, n_actions
 
 
     def _name(self) -> str:
@@ -120,7 +147,7 @@ class DQN:
         '''
         Epsilon linearly annealing
         '''
-        return self.epsilon_final + (self.epsilon_init - self.epsilon_final) * math.exp(-1. * ep /self.epsilon_decay)
+        return self.epsilon_final + (self.epsilon_init - self.epsilon_final) * math.exp(-1. * ep / self.epsilon_decay)
 
 
     def _store_transition(self,
@@ -143,10 +170,10 @@ class DQN:
         self.buffer.add(state, action, reward, next_state, terminated)
 
 
-    def _act(self, state: np.ndarray, epsilon: float=0) -> int:
+    def _act(self, state: np.ndarray, epsilon: float=0.0) -> int:
         '''
         Select action according to the behavior policy
-            here we are using epsilon-greedy as behavior policy
+            here we use epsilon-greedy as behavior policy
         '''
         if random.random() <= epsilon:
             action = random.choice(self.action_space)
@@ -184,9 +211,26 @@ class DQN:
         return loss
 
 
+    def _update_target(self):
+        '''
+        Update target network's parameters
+        '''
+        self.Qnet_target.load_state_dict(self.Qnet.state_dict())
+
+
+    def _soft_update_target(self):
+        '''
+        Soft update for target network's parameters
+        '''
+        try:
+            for target_param, param in zip(self.Qnet_target.parameters(), self.Qnet.parameters()):
+                target_param.data.copy_(self.tau * param.data + (1.0 - self.tau) * target_param.data)
+        except:
+            print('Smothness parameter tau is required!')
+
+
     def _learn(self):
-        if self.step % self.train_freq == 0 \
-                and len(self.buffer) >= self.batch_size:
+        if self.step % self.train_freq == 0 and len(self.buffer) >= self.batch_size:
             states, actions, rewards, next_states, terminated = self.buffer.sample(self.batch_size)
             states = torch.from_numpy(states).float().to(self.device)
             actions = torch.from_numpy(np.vstack(actions)).long().to(self.device)
@@ -201,15 +245,16 @@ class DQN:
             self.optimizer.step()
 
         if self.step % self.update_target == 0:
-            self.Qnet_target.load_state_dict(self.Qnet.state_dict())
+            self._update_target_network()
+
         self.step += 1
 
 
     def _load(self, model_path: str) -> None:
         '''
-        Load checkpoint
+        Load model
         '''
-        self.Qnet.load_state_dict(torch.load(model_path))
+        self.Qnet.load_state_dict(torch.load(model_path, map_location=self.device))
         self.Qnet.eval()
 
 
@@ -267,15 +312,15 @@ class DQN:
         model_path: model path to load
         render_video: whether to render output video
         '''
-        self._load(f'/models/{model_path}')
+        self._load(model_path)
         if render_video:
-            video_path = f'/outputs/videos/{splitext(basename(model_path))[0]}.mp4'
+            video_path = f'./outputs/videos/{splitext(basename(model_path))[0]}.mp4'
             video = video_recorder.VideoRecorder(self.env, path=video_path)
             __render = lambda:\
                 self.env.render(mode='rgb_array');\
                 video.capture_frame()
         else:
-            __render = lambda: self.env.render()
+            __render = lambda: self.env.render(mode='rgb_array')
         state = self.env.reset()
         while True:
             __render()

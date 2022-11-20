@@ -11,7 +11,8 @@ class DeepQNet(nn.Module):
 
     def __init__(self, 
                 state_dim: int,
-                n_actions: int):
+                n_actions: int,
+                seed: int):
         '''
         Parameters
         ----------
@@ -19,6 +20,7 @@ class DeepQNet(nn.Module):
         n_actions: number of actions
         '''
         super().__init__()
+        torch.manual_seed(seed)
         self.layers = nn.Sequential(
             nn.Linear(state_dim, 64),
             nn.ReLU(),
@@ -42,8 +44,10 @@ class CNNDeepQNet(nn.Module):
 
     def __init__(self,
                 input_dim,
-                n_actions: int):
+                n_actions: int,
+                seed: int):
         super().__init__()
+        torch.manual_seed(seed)
         self.features = nn.Sequential(
             nn.Conv2d(input_dim[0], 32, kernel_size=8, stride=4),
             nn.ReLU(),
@@ -75,8 +79,10 @@ class DuelingQNet(nn.Module):
 
     def __init__(self,
                 input_dim,
-                n_actions: int):
+                n_actions: int,
+                seed: int):
         super().__init__()
+        torch.manual_seed(seed)
         self.features = nn.Sequential(
             nn.Conv2d(input_dim[0], 32, kernel_size=8, stride=4),
             nn.ReLU(),
