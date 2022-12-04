@@ -25,7 +25,7 @@ class ReplayBuffer:
         buffer_size: buffer_size
         seed: random seed
         '''
-        self.memory = deque(maxlen=buffer_size)
+        self._memory = deque(maxlen=buffer_size)
         random.seed(seed)
 
 
@@ -47,7 +47,7 @@ class ReplayBuffer:
         terminated: whether is terminated
         '''
         e = Experience(state, action, reward, next_state, terminated)
-        self.memory.append(e)
+        self._memory.append(e)
 
 
     def sample(self, batch_size: int) -> Tuple[List[np.ndarray], List[int], List[float], List[np.ndarray], List[bool]]:
@@ -55,10 +55,10 @@ class ReplayBuffer:
         Sample a mini batch randomly from the buffer memory
 
         Parameters
-        ----------        
+        ----------
         batch_size: minibatch size
         '''
-        experiences = random.sample(self.memory, k=batch_size)
+        experiences = random.sample(self._memory, k=batch_size)
         states, actions, rewards, next_states, terminated = [], [], [], [], []
 
         for e in experiences:
@@ -72,5 +72,11 @@ class ReplayBuffer:
 
 
     def __len__(self) -> int:
-        return len(self.memory)
+        return len(self._memory)
 
+
+class PrioritizedReplay(ReplayBuffer):
+
+
+    def __init__(self, buffer_size: int, seed: int):
+        super().__init__(buffer_size, seed)

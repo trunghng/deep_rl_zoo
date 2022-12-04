@@ -19,6 +19,9 @@ def get_args():
                         help='Whether to use dueling Q-network')
     parser.add_argument('--prioritized-replay', action='store_true',
                         help='Whether to use prioritized replay')
+    parser.add_argument('--alpha', type=float,
+                        help='Alpha value for prioritized replay')
+    
     parser.add_argument('--epsilon-init', type=float, default=1.0,
                         help='Initial value of epsilon')
     parser.add_argument('--epsilon-final', type=float, default=0.01,

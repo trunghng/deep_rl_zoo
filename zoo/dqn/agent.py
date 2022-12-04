@@ -121,12 +121,12 @@ class DQN:
 
 
     def _create_env(self, env_name: str, atari: bool, evaluate: bool):
-        if evaluate:
-            mode = 'human'
-        else:
-            mode = 'rgb_array'
-
         if atari:
+            if evaluate:
+                mode = 'human'
+            else:
+                mode = 'rgb_array'
+
             env = make_atari(env_name, mode)
             env = wrap_deepmind(env)
             env = wrap_pytorch(env)
@@ -316,7 +316,7 @@ class DQN:
         state = self._env.reset()
 
         while True:
-            self._env.render(mode='rgb_array');
+            self._env.render(mode='rgb_array')
             if render_video:
                 video.capture_frame()
             action = self._act(state)
