@@ -4,7 +4,7 @@ import argparse
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Vanilla Policy Gradient')
-    parser.add_argument('--env', type=str, choices=['CartPole-v0', 'Pendulum-v0'],
+    parser.add_argument('--env', type=str, choices=['CartPole-v0', 'Pendulum-v1'],
                         help='OpenAI enviroment')
     parser.add_argument('--eval', action='store_true',
                         help='Whether to enable evaluation')

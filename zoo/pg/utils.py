@@ -39,9 +39,8 @@ class Buffer:
         '''
         :return observations: obserations along trajectory
         :return actions: actions along trajectory
-        :return values: state value along trajectory
-        :return gae_list: advantage functions along trajectory
-        :return reward_to_go_list: reward-to-go along trajectory
+        :return advs: advantage functions along trajectory
+        :return rewards_to_go: rewards-to-go along trajectory
         '''
         assert self._trajectory_len, 'Need more rollouts!'
 
@@ -49,7 +48,7 @@ class Buffer:
         gae = 0
         reward_to_go = 0
         advs = []
-        reward_to_go_list = []
+        rewards_to_go = []
         observations = []
         actions = []
         while self._trajectory:
@@ -61,16 +60,18 @@ class Buffer:
             actions.insert(0, action)
 
             step_to_go = self._trajectory_len - len(self._trajectory)
-            gae += ((self._gamma * self._lambda) ** step_to_go) * delta
+            gae += np.power((self._gamma * self._lambda), step_to_go) * delta
             advs.insert(0, gae)
 
-            reward_to_go += self._gamma * reward_to_go
-            reward_to_go_list.insert(0, reward_to_go)
+            reward_to_go = reward + self._gamma * reward_to_go
+            rewards_to_go.insert(0, reward_to_go)
 
+        observations = np.array(observations)
+        actions = np.array(actions)
+        advs = np.array(advs)
         mean, std = np.mean(advs), np.std(advs)
-        for i in range(len(advs)):
-            advs[i] = (advs[i] - mean) / std
+        advs = (advs - mean) / std
+        rewards_to_go = np.array(rewards_to_go)
+        trajectory_data = (observations, actions, advs, rewards_to_go)
 
-        trajectory_data = (observations, actions, advs, reward_to_go_list)
         return trajectory_data
-
