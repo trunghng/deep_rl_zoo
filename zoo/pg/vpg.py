@@ -1,4 +1,5 @@
 from os.path import join
+import argparse
 import gym
 from gym.wrappers.monitoring import video_recorder
 import torch
@@ -24,8 +25,8 @@ class VPG:
         :param pi_lr: learning rate for policy network (actor) optimization
         :param v_lr: learning rate for value network (critic) optimization
         :param epochs: number of epochs
-        :param step_per_epoch: maximum number of steps per epoch
-        :param train_v_iters: frequency of gradient descent on value network
+        :param steps_per_epoch: maximum number of steps per epoch
+        :param train_v_iters: #GD-steps to take on value func per epoch
         :param max_ep_len: maximum episode/trajectory length
         :param gamma: discount factor
         :param lamb: eligibility trace
@@ -75,8 +76,6 @@ class VPG:
         '''
         values = self._ac.critic(torch.as_tensor(observations, dtype=torch.float32))
         loss = ((values - rewards_to_go) ** 2).mean()
-        # print('value', values)
-        # print('rtg', rewards_to_go)
         return loss
 
 
@@ -184,3 +183,46 @@ class VPG:
                 print(f'Episode finished after {step} steps')
                 break
         self._env.close()
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Vanilla Policy Gradient')
+    parser.add_argument('--env', type=str, choices=['CartPole-v0', 'Pendulum-v1'],
+                        help='OpenAI enviroment')
+    parser.add_argument('--eval', action='store_true',
+                        help='Whether to enable evaluation')
+    parser.add_argument('--model-path', type=str,
+                        help='Model path to load')
+    parser.add_argument('--seed', type=int, default=1,
+                        help='Random seed')
+    parser.add_argument('--pi-lr', type=float,
+                        help='Learning rate for policy optimization')
+    parser.add_argument('--v-lr', type=float,
+                        help='Learning rate for value function optimization')
+    parser.add_argument('--epochs', type=int,
+                        help='Number of epochs')
+    parser.add_argument('--steps-per-epoch', type=int,
+                        help='Maximum number of epoch for each epoch')
+    parser.add_argument('--train-v-iters', type=int,
+                        help='Value network update frequency')
+    parser.add_argument('--max-ep-len', type=int,
+                        help='Maximum episode/trajectory length')
+    parser.add_argument('--gamma', type=float,
+                        help='Discount factor')
+    parser.add_argument('--lamb', type=float,
+                        help='Eligibility trace')
+    parser.add_argument('--goal', type=int,
+                        help='Goal total reward to end training')
+    parser.add_argument('--save', action='store_true',
+                        help='Whether to save training model')
+    parser.add_argument('--render', action='store_true',
+                        help='Whether to save training result as video')
+    parser.add_argument('--plot', action='store_true',
+                        help='Whether to plot training statistics and save as image')
+    args = parser.parse_args()
+    agent = VPG(args)
+    if args.eval:
+        agent.load(args.model_path)
+        agent.test()
+    else:
+        agent.train()
