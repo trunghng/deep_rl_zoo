@@ -18,15 +18,13 @@ class ReplayBuffer:
     Replay buffer class
     '''
 
-    def __init__(self, buffer_size: int, seed: int):
+    def __init__(self, buffer_size: int):
         '''
         Parameters
         ----------
         buffer_size: buffer_size
-        seed: random seed
         '''
         self._memory = deque(maxlen=buffer_size)
-        random.seed(seed)
 
 
     def add(self,
@@ -78,5 +76,5 @@ class ReplayBuffer:
 class PrioritizedReplay(ReplayBuffer):
 
 
-    def __init__(self, buffer_size: int, seed: int):
-        super().__init__(buffer_size, seed)
+    def __init__(self, buffer_size: int):
+        super().__init__(buffer_size)

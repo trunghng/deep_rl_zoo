@@ -13,27 +13,47 @@ class VPG:
 
 
     def __init__(self, args,
-                models_dir: str='./output/models',
-                vids_dir: str='./output/videos',
-                imgs_dir: str='./output/images'):
+                model_dir: str='./output/models',
+                video_dir: str='./output/videos',
+                figure_dir: str='./output/images'):
         '''
         Vanilla Policy Gradient with Actor-Critic approach & Generalized Advantage Estimators & 
             using rewards-to-go as target for the value function, which is chosen as the baseline
 
-        :param env: environment name
-        :param seed: random seed
-        :param pi_lr: learning rate for policy network (actor) optimization
-        :param v_lr: learning rate for value network (critic) optimization
-        :param epochs: number of epochs
-        :param steps_per_epoch: maximum number of steps per epoch
-        :param train_v_iters: #GD-steps to take on value func per epoch
-        :param max_ep_len: maximum episode/trajectory length
-        :param gamma: discount factor
-        :param lamb: eligibility trace
-        :param goal: goal total reward for early stopping
-        :param save: whether to save the final model
-        :param render: whether to render the training result in video
-        :param plot: whether to plot the statistics and save as image
+        :param env: (str)
+            OpenAI's environment name
+        :param seed: (int)
+            Random seed
+        :param pi_lr: (float)
+            Learning rate for policy network (actor) optimization
+        :param v_lr: (float)
+            Learning rate for value network (critic) optimization
+        :param epochs: (int)
+            Number of epochs
+        :param steps_per_epoch: (int)
+            Maximum number of steps per epoch
+        :param train_v_iters: (int)
+            Number of GD-steps to take on value func per epoch
+        :param max_ep_len: (int)
+            Maximum episode/trajectory length
+        :param gamma: (float)
+            Discount factor
+        :param lamb: (float)
+            Lambda for GAE
+        :param goal: (float)
+            Total reward threshold for early stopping
+        :param save: (bool)
+            Whether to save the final model
+        :param render: (bool)
+            Whether to render the training result in video
+        :param plot: (bool)
+            Whether to plot the statistics and save as image
+        :param model_dir: (str)
+            Model directory
+        :param video_dir: (str)
+            Video directory
+        :param figure_dir: (str)
+            Figure directory
         '''
         self._env = gym.make(args.env)
         self._env.seed(args.seed)
@@ -51,10 +71,10 @@ class VPG:
             self._max_ep_len = args.max_ep_len
             self._buffer = Buffer(args.max_ep_len, args.gamma, args.lamb)
             self._goal = args.goal
-        basename = f'VPG-{args.env}'
-        self._model_path = join(models_dir, f'{basename}.pth') if args.save else None
-        self._vid_path = join(vids_dir, f'{basename}.mp4') if args.render else None
-        self._plot_path = join(imgs_dir, f'{basename}.png') if args.plot else None
+            basename = f'VPG-{args.env}'
+            self._model_path = join(model_dir, f'{basename}.pth') if args.save else None
+            self._vid_path = join(video_dir, f'{basename}.mp4') if args.render else None
+            self._plot_path = join(figure_dir, f'{basename}.png') if args.plot else None
 
 
     def _compute_pi_loss(self, observations, actions, advs):
@@ -220,9 +240,12 @@ if __name__ == '__main__':
     parser.add_argument('--plot', action='store_true',
                         help='Whether to plot training statistics and save as image')
     args = parser.parse_args()
+
+    if not args.eval and args.model_path or (not args.model_path and args.eval):
+        parser.error('Arguments --eval & --model-path must be specified together.')
+
     agent = VPG(args)
     if args.eval:
-        agent.load(args.model_path)
-        agent.test()
+        agent.test(model_path=args.model_path)
     else:
         agent.train()
