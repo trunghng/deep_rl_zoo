@@ -22,9 +22,9 @@ class VPG:
 
         :param env: OpenAI's environment name
         :param seed: Random seed
-        :param pi_lr: (float) Learning rate for policy network (actor) optimization
-        :param v_lr: (float) Learning rate for value network (critic) optimization
-        :param epochs: (int) Number of epochs
+        :param pi_lr: Learning rate for policy network (actor) optimization
+        :param v_lr: Learning rate for value network (critic) optimization
+        :param epochs: Number of epochs
         :param steps_per_epoch: Maximum number of steps per epoch
         :param train_v_iters: Number of GD-steps to take on value func per epoch
         :param max_ep_len: Maximum episode/trajectory length
