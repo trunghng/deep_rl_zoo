@@ -15,45 +15,28 @@ class VPG:
     def __init__(self, args,
                 model_dir: str='./output/models',
                 video_dir: str='./output/videos',
-                figure_dir: str='./output/images'):
+                figure_dir: str='./output/figures'):
         '''
         Vanilla Policy Gradient with Actor-Critic approach & Generalized Advantage Estimators & 
             using rewards-to-go as target for the value function, which is chosen as the baseline
 
-        :param env: (str)
-            OpenAI's environment name
-        :param seed: (int)
-            Random seed
-        :param pi_lr: (float)
-            Learning rate for policy network (actor) optimization
-        :param v_lr: (float)
-            Learning rate for value network (critic) optimization
-        :param epochs: (int)
-            Number of epochs
-        :param steps_per_epoch: (int)
-            Maximum number of steps per epoch
-        :param train_v_iters: (int)
-            Number of GD-steps to take on value func per epoch
-        :param max_ep_len: (int)
-            Maximum episode/trajectory length
-        :param gamma: (float)
-            Discount factor
-        :param lamb: (float)
-            Lambda for GAE
-        :param goal: (float)
-            Total reward threshold for early stopping
-        :param save: (bool)
-            Whether to save the final model
-        :param render: (bool)
-            Whether to render the training result in video
-        :param plot: (bool)
-            Whether to plot the statistics and save as image
-        :param model_dir: (str)
-            Model directory
-        :param video_dir: (str)
-            Video directory
-        :param figure_dir: (str)
-            Figure directory
+        :param env: OpenAI's environment name
+        :param seed: Random seed
+        :param pi_lr: (float) Learning rate for policy network (actor) optimization
+        :param v_lr: (float) Learning rate for value network (critic) optimization
+        :param epochs: (int) Number of epochs
+        :param steps_per_epoch: Maximum number of steps per epoch
+        :param train_v_iters: Number of GD-steps to take on value func per epoch
+        :param max_ep_len: Maximum episode/trajectory length
+        :param gamma: Discount factor
+        :param lamb: Lambda for GAE
+        :param goal: Total reward threshold for early stopping
+        :param save: Whether to save the final model
+        :param render: Whether to render the training result in video
+        :param plot: Whether to plot the statistics and save as image
+        :param model_dir: Model directory
+        :param video_dir: Video directory
+        :param figure_dir: Figure directory
         '''
         self._env = gym.make(args.env)
         self._env.seed(args.seed)
@@ -83,8 +66,7 @@ class VPG:
         :param actions:
         :param advs:
         '''
-        _, eligibilities = self._ac.actor(torch.as_tensor(observations, dtype=torch.float32),
-                                        torch.as_tensor(actions, dtype=torch.int32))
+        _, eligibilities = self._ac.actor(observations, actions)
         loss = -(eligibilities * advs).mean()
         return loss
 
@@ -94,29 +76,26 @@ class VPG:
         :param observations:
         :param rewards_to_go:
         '''
-        values = self._ac.critic(torch.as_tensor(observations, dtype=torch.float32))
+        values = self._ac.critic(observations)
         loss = ((values - rewards_to_go) ** 2).mean()
         return loss
 
 
-    def _update_params(self, trajectory_data):
+    def _update_params(self):
         '''
         Update parameters
         '''
-        observations, actions, advs, rewards_to_go = trajectory_data
-        self._ac.train()
+        observations, actions, log_probs, advs, rewards_to_go = self._buffer.get()
 
+        self._ac.train()
         self._actor_opt.zero_grad()
-        pi_loss = self._compute_pi_loss(torch.as_tensor(observations, dtype=torch.float32),
-                                        torch.as_tensor(actions, dtype=torch.int32),
-                                        torch.as_tensor(advs, dtype=torch.float32))
+        pi_loss = self._compute_pi_loss(observations, actions, advs)
         pi_loss.backward()
         self._actor_opt.step()
 
         for _ in range(self._train_v_iters):
             self._critic_opt.zero_grad()
-            v_loss = self._compute_v_loss(torch.as_tensor(observations, dtype=torch.float32),
-                                        torch.as_tensor(rewards_to_go, dtype=torch.float32))
+            v_loss = self._compute_v_loss(observations, rewards_to_go)
             v_loss.backward()
             self._critic_opt.step()
 
@@ -140,7 +119,7 @@ class VPG:
                 action, log_prob, value = self._ac.step(observation)
                 next_observation, reward, terminated, _ = self._env.step(action)
 
-                self._buffer.add(observation, int(action), reward, terminated, float(value))
+                self._buffer.add(observation, int(action), reward, float(value), float(log_prob), terminated)
                 observation = next_observation
                 rewards.append(reward)
 
@@ -151,8 +130,7 @@ class VPG:
                     eps_len.append(ep_len)
                     break
 
-        trajectory_data = self._buffer.get()
-        pi_loss, v_loss = self._update_params(trajectory_data)
+        pi_loss, v_loss = self._update_params()
         return pi_loss, v_loss, returns, eps_len
 
 
@@ -230,7 +208,7 @@ if __name__ == '__main__':
     parser.add_argument('--gamma', type=float,
                         help='Discount factor')
     parser.add_argument('--lamb', type=float,
-                        help='Eligibility trace')
+                        help='Lambda for Generalized Advantage Estimation')
     parser.add_argument('--goal', type=int,
                         help='Goal total reward to end training')
     parser.add_argument('--save', action='store_true',

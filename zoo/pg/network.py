@@ -37,10 +37,10 @@ class Actor(nn.Module, ABC):
 
 
     @abstractmethod
-    def _log_prob(self, dist, action):
+    def _log_prob(self, pi, action):
         '''
         Compute log probility of the action
-        :param dist: action probability
+        :param pi: action probability
         :param action: action
         :return: log of action probability
         '''
@@ -48,16 +48,16 @@ class Actor(nn.Module, ABC):
 
 
     def forward(self, observation, action=None):
-        dist = self._distribution(observation)
-        log_prob = self._log_prob(dist, action) if action is not None else None
-        return dist, log_prob
+        pi = self._distribution(observation)
+        log_prob = self._log_prob(pi, action) if action is not None else None
+        return pi, log_prob
 
 
     def step(self, observation):
         with torch.no_grad():
-            dist = self._distribution(observation)
-            action = dist.sample()
-            log_prob = self._log_prob(dist, action)
+            pi = self._distribution(observation)
+            action = pi.sample()
+            log_prob = self._log_prob(pi, action)
         return action, log_prob
 
 
@@ -76,15 +76,15 @@ class MLPCategoricalActor(Actor):
         :param activation: activation function
         '''
         super().__init__()
-        self.policy_network = mlp([obs_dim, *hidden_sizes, act_dim], activation)
+        self.logits_network = mlp([obs_dim, *hidden_sizes, act_dim], activation)
 
 
     def _distribution(self, observation):
-        return Categorical(logits=self.policy_network(observation))
+        return Categorical(logits=self.logits_network(observation))
 
 
-    def _log_prob(self, dist, action):
-        return dist.log_prob(action)
+    def _log_prob(self, pi, action):
+        return pi.log_prob(action)
 
 
 class MLPGaussianActor(Actor):
@@ -112,8 +112,8 @@ class MLPGaussianActor(Actor):
         return Normal(mean, std)
 
 
-    def _log_prob(self, dist, action):
-        return dist.log_prob(action).sum(axis=-1)
+    def _log_prob(self, pi, action):
+        return pi.log_prob(action).sum(axis=-1)
 
 
 class MLPCritic(nn.Module):
