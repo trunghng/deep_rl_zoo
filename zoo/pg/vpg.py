@@ -66,8 +66,8 @@ class VPG:
         :param actions:
         :param advs:
         '''
-        _, eligibilities = self._ac.actor(observations, actions)
-        loss = -(eligibilities * advs).mean()
+        _, log_prob = self._ac.actor(observations, actions)
+        loss = -(log_prob * advs).mean()
         return loss
 
 
@@ -106,11 +106,11 @@ class VPG:
         '''
         One epoch training
         '''
-        epoch_step = 0
+        step = 0
         returns = []
         eps_len = []
 
-        while epoch_step < self._steps_per_epoch:
+        while step < self._steps_per_epoch:
             observation = self._env.reset()
             rewards = []
 
@@ -125,18 +125,13 @@ class VPG:
 
                 if terminated or (len(rewards) == self._max_ep_len):
                     return_, ep_len = sum(rewards), len(rewards)
-                    epoch_step += ep_len
+                    step += ep_len
                     returns.append(return_)
                     eps_len.append(ep_len)
                     break
 
         pi_loss, v_loss = self._update_params()
         return pi_loss, v_loss, returns, eps_len
-
-
-    def load(self, model_path: str):
-        self._ac.actor.load_state_dict(torch.load(model_path))
-        self._ac.actor.eval()
 
 
     def train(self):
@@ -162,23 +157,21 @@ class VPG:
     def test(self, vid_path: str=None, model_path: str=None):
         print('---Evaluating---')
         if model_path:
-            self.load(model_path)
+            self._ac.actor.load_state_dict(torch.load(model_path))
         if vid_path:
             vr = video_recorder.VideoRecorder(self._env, path=vid_path)
-
         obs = self._env.reset()
-        step = 0
+        step = total_reward =0
         while True:
             self._env.render()
             if vid_path:
                 vr.capture_frame()
-
             action, _, _ = self._ac.step(obs)
             obs, reward, terminated, _ = self._env.step(action)
             step += 1
-
+            total_reward += reward
             if terminated:
-                print(f'Episode finished after {step} steps')
+                print(f'Episode finished after {step} steps\nTotal reward {total_reward}')
                 break
         self._env.close()
 
@@ -186,7 +179,7 @@ class VPG:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Vanilla Policy Gradient')
     parser.add_argument('--env', type=str, choices=['CartPole-v0', 'Pendulum-v1'],
-                        help='OpenAI enviroment')
+                        help='OpenAI enviroment name')
     parser.add_argument('--eval', action='store_true',
                         help='Whether to enable evaluation')
     parser.add_argument('--model-path', type=str,
@@ -200,9 +193,9 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', type=int,
                         help='Number of epochs')
     parser.add_argument('--steps-per-epoch', type=int,
-                        help='Maximum number of epoch for each epoch')
+                        help='Maximum number of steps for each epoch')
     parser.add_argument('--train-v-iters', type=int,
-                        help='Value network update frequency')
+                        help='Number of gradient descent steps to take on value function per epoch')
     parser.add_argument('--max-ep-len', type=int,
                         help='Maximum episode/trajectory length')
     parser.add_argument('--gamma', type=float,
@@ -210,7 +203,7 @@ if __name__ == '__main__':
     parser.add_argument('--lamb', type=float,
                         help='Lambda for Generalized Advantage Estimation')
     parser.add_argument('--goal', type=int,
-                        help='Goal total reward to end training')
+                        help='Total reward threshold for early stopping')
     parser.add_argument('--save', action='store_true',
                         help='Whether to save training model')
     parser.add_argument('--render', action='store_true',

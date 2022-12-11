@@ -34,9 +34,9 @@ class Buffer:
 
     def __init__(self, size: int, gamma: float, lambda_: float):
         '''
-        :param size: horizon time
-        :param gamma: discount factor
-        :param lambda_: eligibility trace
+        :param size: Horizon time
+        :param gamma: Discount factor
+        :param lambda_: Lambda for GAE
         '''
         self._gamma = gamma
         self._lambda = lambda_
