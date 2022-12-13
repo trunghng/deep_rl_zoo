@@ -1,4 +1,5 @@
 import gym
+from gym.wrappers.monitoring import video_recorder
 import numpy as np
 import torch
 from torch.optim import Adam
@@ -9,47 +10,46 @@ from utils import *
 import argparse
 from os.path import join
 from copy import deepcopy
+import random
 
 
 class TRPO:
 
 
     def __init__(self, args,
-                model_dir: str='./output/models',
-                video_dir: str='./output/videos',
-                figure_dir: str='./output/figures'):
+                model_dir='./output/models',
+                video_dir='./output/videos',
+                figure_dir='./output/figures'):
         '''
         TRPO & Natural Policy Gradient w/ Actor-Critic approach & 
             Generalized Advantage Estimators & 
             using rewards-to-go as target for the value function
 
-        :param env: OpenAI's environment name
-        :param seed: Random seed
-        :param v_lr: Learning rate for value network optimization
-        :param epochs: Number of epochs
-        :param steps_per_epoch: Maximum number of steps per epoch
-        :param train_v_iters: Number of GD-steps to take on value func per epoch
-        :param max_ep_len: Maximum episode/trajectory length
-        :param gamma: Discount factor
-        :param lamb: Lambda for GAE
-        :param goal: Total reward threshold for early stopping
-        :param delta: KL divergence threshold
-        :param damping_coeff: Damping coefficient
-        :param cg_iters: Number of iterations of CG to perform
-        :param linesearch: Whether to use backtracking line search (if not, TRPO -> NPG)
-        :param backtrack_iters: Maximum number of steps in the backtracking line search
-        :param backtrack_coeff: How far back to step during backtracking line search
-        :param save: Whether to save the final model
-        :param render: Whether to render the training result in video
-        :param plot: Whether to plot the statistics and save as image
-        :param model_dir: Model directory
-        :param video_dir: Video directory
-        :param figure_dir: Figure directory
+        :param env: (str) OpenAI's environment name
+        :param seed: (int) Seed for RNG
+        :param v_lr: (float) Learning rate for value function optimizer
+        :param epochs: (int) Number of epochs
+        :param steps_per_epoch: (int) Maximum number of steps per epoch
+        :param train_v_iters: (int) Number of GD-steps to take on value function per epoch
+        :param max_ep_len: (int) Maximum episode/trajectory length
+        :param gamma: (float) Discount factor
+        :param lamb: (float) Lambda for GAE
+        :param goal: (float) Total reward threshold for early stopping
+        :param delta: (float) KL divergence threshold
+        :param damping_coeff: (float) Damping coefficient
+        :param cg_iters: (int) Number of iterations of CG to perform
+        :param linesearch: (bool) Whether to use backtracking line search (if not, TRPO -> NPG)
+        :param backtrack_iters: (int) Maximum number of steps of line search
+        :param backtrack_coeff: (float) How far back to step during backtracking line search
+        :param save: (bool) Whether to save the final model
+        :param render: (bool) Whether to render the training result in video
+        :param plot: (bool) Whether to plot the statistics and save as image
+        :param model_dir: (str) Model directory
+        :param video_dir: (str) Video directory
+        :param figure_dir: (str) Figure directory
         '''
         self._env = gym.make(args.env)
-        torch.manual_seed(args.seed)
-        np.random.seed(args.seed)
-        self._env.seed(args.seed)
+        self._seed(args.seed)
         observation_space = self._env.observation_space
         action_space = self._env.action_space
         self._ac = MLPActorCritic(observation_space, action_space)
@@ -68,10 +68,25 @@ class TRPO:
                 self._linesearch = True
                 self._backtrack_iters = args.backtrack_iters
                 self._backtrack_coeff = args.backtrack_coeff
-        basename = f'VPG-{args.env}'
-        self._model_path = join(model_dir, f'{basename}.pth') if args.save else None
-        self._vid_path = join(video_dir, f'{basename}.mp4') if args.render else None
-        self._plot_path = join(figure_dir, f'{basename}.png') if args.plot else None
+                algo = 'TRPO'
+            else:
+                self._linesearch = False
+                algo = 'NPG'
+            print(f'Algorithm: {algo}\nEnvironment: {args.env}')
+            basename = f'{algo}-{args.env}'
+            self._model_path = join(model_dir, f'{basename}.pth') if args.save else None
+            self._vid_path = join(video_dir, f'{basename}.mp4') if args.render else None
+            self._plot_path = join(figure_dir, f'{basename}.png') if args.plot else None
+
+
+    def _seed(self, seed: int):
+        '''
+        Set global seed
+        '''
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        random.seed(seed)
+        self._env.seed(seed)
 
 
     def _update_params(self):
@@ -129,9 +144,11 @@ class TRPO:
                 FIM: F = grad**2 kl
             '''
             kl = compute_kl()
-            grad_kl = flatten(grad(kl, self._ac.actor.parameters(), create_graph=True))
+            grad_kl = grad(kl, self._ac.actor.parameters(), create_graph=True)
+            grad_kl = flatten(grad_kl)
             grad_kl_x = (grad_kl * x).sum()
-            Fx_ = flatten(grad(grad_kl_x, self._ac.actor.parameters()))
+            grad2_kl_x = grad(grad_kl_x, self._ac.actor.parameters())
+            Fx_ = flatten(grad2_kl_x)
             return Fx_ + self._damping_coeff * x
 
         '''
@@ -141,7 +158,7 @@ class TRPO:
                          = sqrt(2*delta / (x^T)Fx)
         '''
         x = conjugate_gradient(Fx, g, self._cg_iters)
-        step_size = torch.sqrt(2 * self._delta / torch.dot(x, Fx(x)))
+        step_size = torch.sqrt(2 * self._delta / (torch.dot(x, Fx(x)) + 1e-8))
 
         '''
         Update pi's parameters (theta):
@@ -153,18 +170,24 @@ class TRPO:
                        = theta + step_size * x
         '''
         actor_old = deepcopy(self._ac.actor)
+        old_params = []
+        for param in actor_old.parameters():
+            old_params.append(param.data.view(-1))
+        old_params = torch.cat(old_params)
 
         @torch.no_grad()
         def linesearch(scale):
-            # TODO: flatten param -> set
-            for theta, theta_old in zip(self._ac.actor.parameters(), actor_old.parameters()):
-                theta.copy_(theta_old - scale * step_size * x)
+            params = old_params - scale * step_size * x
+            prev_idx = 0
+            for param in self._ac.actor.parameters():
+                size = int(np.prod(list(param.size())))
+                param.data.copy_(params[prev_idx:prev_idx + size].view(param.size()))
+                prev_idx += size
+
             pi_loss, kl = compute_pi_loss_kl()
             return pi_loss.item(), kl.item()
 
         if self._linesearch:
-            pi_loss, kl = linesearch(1.0)
-        else:
             for j in range(self._backtrack_iters):
                 pi_loss, kl = linesearch(self._backtrack_coeff ** j)
                 if kl <= self._delta and pi_loss <= pi_loss_old:
@@ -173,6 +196,8 @@ class TRPO:
                 if j == self._backtrack_iters - 1:
                     print('Line search failed! Keeping old params.')
                     pi_loss, kl = linesearch(0)
+        else:
+            pi_loss, kl = linesearch(1.0)
         
         # Update v's parameters
         for _ in range(self._train_v_iters):
@@ -194,40 +219,40 @@ class TRPO:
         '''
         Perform one training epoch
         '''
-        epoch_step = 0
         returns = []
         eps_len = []
+        step = 0
 
-        while epoch_step <= self._steps_per_epoch:
+        while step <= self._steps_per_epoch:
             observation = self._env.reset()
             rewards = []
 
             while True:
-                action, logp, value = self._ac.step(observation)
+                action, log_prob, value = self._ac.step(observation)
                 next_observation, reward, terminated, _ = self._env.step(action)
-
-                self._buffer.add(observation, action, reward, value, float(logp), terminated)
-                next_observation = observation
+                self._buffer.add(observation, float(action), reward, float(value), float(log_prob), terminated)
+                observation = next_observation
                 rewards.append(reward)
 
-                if terminated:
+                if terminated or (len(rewards) == self._max_ep_len):
                     return_, ep_len = sum(rewards), len(rewards)
-                    epoch_step += ep_len
+                    step += ep_len
                     eps_len.append(ep_len)
                     returns.append(return_)
                     break
         epoch_info = self._update_params()
         epoch_info['returns'] = returns
-        epoch_info['eps_len'] = ep_len
+        epoch_info['eps_len'] = eps_len
         return epoch_info
 
 
     def train(self):
+        print('---Training---')
         for epoch in range(1, self._epochs + 1):
             info = self._train_one_epoch()
             avg_return = np.mean(info['returns'])
-            print('Epoch: %3d \t pi_loss: %.3f \t v_loss: %.3f \t return: %.3f \t ep_len: %.3f'%
-                (epoch, info['pi_loss'], info['v_loss'], avg_return, np.mean(info['eps_len'])))
+            print('Epoch: %3d \tpi_loss: %.3f \tv_loss: %.3f \tavg_kl: %.4f \treturn: %.3f \tep_len: %.3f'%
+                (epoch, info['pi_loss'], info['v_loss'], info['kl'], avg_return, np.mean(info['eps_len'])))
             if self._goal and avg_return >= self._goal:
                 print(f'Environment solved at epoch {epoch}!')
                 break
@@ -242,10 +267,32 @@ class TRPO:
             pass
 
 
+    def test(self, vid_path: str=None, model_path: str=None):
+        print('---Evaluating---')
+        if model_path:
+            self._ac.actor.load_state_dict(torch.load(model_path))
+        if vid_path:
+            vr = video_recorder.VideoRecorder(self._env, path=vid_path)
+        obs = self._env.reset()
+        step = total_reward = 0
+        while True:
+            self._env.render()
+            if vid_path:
+                vr.capture_frame()
+            action, _, _ = self._ac.step(obs)
+            obs, reward, terminated, _ = self._env.step(action)
+            step += 1
+            total_reward += reward
+            if terminated:
+                print(f'Episode finished after {step} steps\nTotal reward: {total_reward}')
+                break
+        self._env.close()
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Trust Region Policy Optimization')
     parser.add_argument('--env', type=str, choices=['CartPole-v0', 'Pendulum-v1'],
-                        help='OpenAI enviroment')
+                        help='OpenAI enviroment name')
     parser.add_argument('--eval', action='store_true',
                         help='Whether to enable evaluation')
     parser.add_argument('--model-path', type=str,
@@ -253,21 +300,21 @@ if __name__ == '__main__':
     parser.add_argument('--seed', type=int, default=0,
                         help='Random seed')
     parser.add_argument('--v-lr', type=float,
-                        help='Learning rate for value function optimization')
+                        help='Learning rate for value function optimizer')
     parser.add_argument('--epochs', type=int,
                         help='Number of epochs')
     parser.add_argument('--steps-per-epoch', type=int,
-                        help='Maximum number of epoch for each epoch')
+                        help='Maximum number of steps for each epoch')
     parser.add_argument('--train-v-iters', type=int,
-                        help='Value network update frequency')
+                        help='Number of gradient descent steps to take on value function per epoch')
     parser.add_argument('--max-ep-len', type=int,
                         help='Maximum episode/trajectory length')
     parser.add_argument('--gamma', type=float,
                         help='Discount factor')
     parser.add_argument('--lamb', type=float,
-                        help='Eligibility trace')
+                        help='Lambda for Generalized Advantage Estimation')
     parser.add_argument('--goal', type=int,
-                        help='Goal total reward to end training')
+                        help='Total reward threshold for early stopping')
     parser.add_argument('--delta', type=float,
                         help='KL divergence threshold')
     parser.add_argument('--damping-coeff', type=float,
@@ -277,9 +324,9 @@ if __name__ == '__main__':
     parser.add_argument('--linesearch', action='store_true', 
                         help='Whether to use backtracking line-search')
     parser.add_argument('--backtrack-iters', type=int,
-                        help='Maximum number of steps in the backtracking line-search')
+                        help='Maximum number of steps in the backtracking line search')
     parser.add_argument('--backtrack-coeff', type=float,
-                        help='how far back to step during backtracking line-search')
+                        help='how far back to step during backtracking line search')
     parser.add_argument('--save', action='store_true',
                         help='Whether to save training model')
     parser.add_argument('--render', action='store_true',
@@ -289,7 +336,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     
     if not args.eval and args.model_path or (not args.model_path and args.eval):
-        parser.error('Arguments --eval & --model-path must be specified together.')
+        parser.error('Arguments --eval & --model-path must be specified at the same time.')
     if args.linesearch and not (args.backtrack_coeff and args.backtrack_iters):
         parser.error('Arguments --backtrack-iters & --backtrack-coeff are required when enabling --linesearch.')
 

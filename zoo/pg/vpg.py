@@ -1,5 +1,6 @@
 from os.path import join
 import argparse
+import random
 import gym
 from gym.wrappers.monitoring import video_recorder
 import torch
@@ -13,35 +14,33 @@ class VPG:
 
 
     def __init__(self, args,
-                model_dir: str='./output/models',
-                video_dir: str='./output/videos',
-                figure_dir: str='./output/figures'):
+                model_dir='./output/models',
+                video_dir='./output/videos',
+                figure_dir='./output/figures'):
         '''
         Vanilla Policy Gradient with Actor-Critic approach & Generalized Advantage Estimators & 
             using rewards-to-go as target for the value function, which is chosen as the baseline
 
-        :param env: OpenAI's environment name
-        :param seed: Random seed
-        :param pi_lr: Learning rate for policy network (actor) optimization
-        :param v_lr: Learning rate for value network (critic) optimization
-        :param epochs: Number of epochs
-        :param steps_per_epoch: Maximum number of steps per epoch
-        :param train_v_iters: Number of GD-steps to take on value func per epoch
-        :param max_ep_len: Maximum episode/trajectory length
-        :param gamma: Discount factor
-        :param lamb: Lambda for GAE
-        :param goal: Total reward threshold for early stopping
-        :param save: Whether to save the final model
-        :param render: Whether to render the training result in video
-        :param plot: Whether to plot the statistics and save as image
-        :param model_dir: Model directory
-        :param video_dir: Video directory
-        :param figure_dir: Figure directory
+        :param env: (str) OpenAI environment name
+        :param seed: (int) Seed for RNG
+        :param pi_lr: (float) Learning rate for policy optimizer
+        :param v_lr: (float) Learning rate for value function optimizer
+        :param epochs: (int) Number of epochs
+        :param steps_per_epoch: (int) Maximum number of steps per epoch
+        :param train_v_iters: (int) Number of GD-steps to take on value function per epoch
+        :param max_ep_len: (int) Maximum episode/trajectory length
+        :param gamma: (float) Discount factor
+        :param lamb: (float) Lambda for GAE
+        :param goal: (float) Total reward threshold for early stopping
+        :param save: (bool) Whether to save the final model
+        :param render: (bool) Whether to render the training result in video
+        :param plot: (bool) Whether to plot the statistics and save as image
+        :param model_dir: (str) Model directory
+        :param video_dir: (str) Video directory
+        :param figure_dir: (str) Figure directory
         '''
         self._env = gym.make(args.env)
-        self._env.seed(args.seed)
-        torch.manual_seed(args.seed)
-        np.random.seed(args.seed)
+        self._seed(args.seed)
         observation_space = self._env.observation_space
         action_space = self._env.action_space
         self._ac = MLPActorCritic(observation_space, action_space)
@@ -58,6 +57,16 @@ class VPG:
             self._model_path = join(model_dir, f'{basename}.pth') if args.save else None
             self._vid_path = join(video_dir, f'{basename}.mp4') if args.render else None
             self._plot_path = join(figure_dir, f'{basename}.png') if args.plot else None
+
+
+     def _seed(self, seed: int):
+        '''
+        Set global seed
+        '''
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        random.seed(seed)
+        self._env.seed(seed)
 
 
     def _compute_pi_loss(self, observations, actions, advs):
@@ -106,9 +115,9 @@ class VPG:
         '''
         One epoch training
         '''
-        step = 0
         returns = []
         eps_len = []
+        step = 0
 
         while step < self._steps_per_epoch:
             observation = self._env.reset()
@@ -118,8 +127,7 @@ class VPG:
                 self._ac.eval()
                 action, log_prob, value = self._ac.step(observation)
                 next_observation, reward, terminated, _ = self._env.step(action)
-
-                self._buffer.add(observation, int(action), reward, float(value), float(log_prob), terminated)
+                self._buffer.add(observation, float(action), reward, float(value), float(log_prob), terminated)
                 observation = next_observation
                 rewards.append(reward)
 
@@ -187,9 +195,9 @@ if __name__ == '__main__':
     parser.add_argument('--seed', type=int, default=1,
                         help='Random seed')
     parser.add_argument('--pi-lr', type=float,
-                        help='Learning rate for policy optimization')
+                        help='Learning rate for policy optimizer')
     parser.add_argument('--v-lr', type=float,
-                        help='Learning rate for value function optimization')
+                        help='Learning rate for value function optimizer')
     parser.add_argument('--epochs', type=int,
                         help='Number of epochs')
     parser.add_argument('--steps-per-epoch', type=int,

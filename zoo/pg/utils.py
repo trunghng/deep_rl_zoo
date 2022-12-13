@@ -15,10 +15,10 @@ def conjugate_gradient(Ax, b, cg_iters: int):
     Conjugate gradient
     '''
     x = torch.zeros(b.shape)
-    r = b - Ax(x)
+    r = b.clone()
     p = r.clone()
     rdotr = torch.dot(r, r)
-    for _ in range(cg_iters):
+    for i in range(cg_iters):
         Ap = Ax(p)
         alpha = rdotr / (torch.dot(p, Ap) + 1e-8)
         x += alpha * p
@@ -45,7 +45,7 @@ class Buffer:
 
     def add(self, 
             observation,
-            action: int,
+            action: float,
             reward: float,
             value: float,
             log_prob: float,
@@ -105,7 +105,7 @@ class Buffer:
         advs = (advs - mean) / std
         rewards_to_go = np.array(rewards_to_go)
         trajectory_data = (torch.as_tensor(observations, dtype=torch.float32),
-                           torch.as_tensor(actions, dtype=torch.int32),
+                           torch.as_tensor(actions, dtype=torch.float32),
                            torch.as_tensor(log_probs, dtype=torch.float32),
                            torch.as_tensor(advs, dtype=torch.float32),
                            torch.as_tensor(rewards_to_go, dtype=torch.float32))
