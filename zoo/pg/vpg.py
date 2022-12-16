@@ -1,4 +1,7 @@
-from os.path import join
+from os.path import dirname, join, realpath
+import sys
+dir_path = dirname(dirname(realpath(__file__)))
+sys.path.insert(1, join(dir_path, '..'))
 import argparse
 import random
 import gym
@@ -7,7 +10,9 @@ import torch
 from torch.optim import Adam
 import numpy as np
 from network import MLPActorCritic
-from utils import Buffer
+from utils import Buffer, MPIBuffer
+import common.mpi_utils as mpi
+from common.logger import Logger
 
 
 class VPG:
@@ -39,30 +44,34 @@ class VPG:
         :param video_dir: (str) Video directory
         :param figure_dir: (str) Figure directory
         '''
+        mpi.print_one(args.seed)
         self._env = gym.make(args.env)
         self._seed(args.seed)
         observation_space = self._env.observation_space
         action_space = self._env.action_space
-        self._ac = MLPActorCritic(observation_space, action_space)
+        self._ac = MLPActorCritic(observation_space, action_space, args.hidden_layers)
+        mpi.sync_params(self._ac)
         if not args.eval:
             self._actor_opt = Adam(self._ac.actor.parameters(), lr=args.pi_lr)
             self._critic_opt = Adam(self._ac.critic.parameters(), lr=args.v_lr)
             self._epochs = args.epochs
-            self._steps_per_epoch = args.steps_per_epoch
+            self._steps_per_epoch = int(args.steps_per_epoch / mpi.n_procs())
             self._train_v_iters = args.train_v_iters
             self._max_ep_len = args.max_ep_len
-            self._buffer = Buffer(args.max_ep_len, args.gamma, args.lamb)
+            self._buffer = MPIBuffer(self._steps_per_epoch, args.gamma, args.lamb)
             self._goal = args.goal
             basename = f'VPG-{args.env}'
             self._model_path = join(model_dir, f'{basename}.pth') if args.save else None
             self._vid_path = join(video_dir, f'{basename}.mp4') if args.render else None
             self._plot_path = join(figure_dir, f'{basename}.png') if args.plot else None
+            self._logger = Logger(args.env, 'VPG')
 
 
-     def _seed(self, seed: int):
+    def _seed(self, seed: int):
         '''
         Set global seed
         '''
+        seed += 10000 * mpi.proc_rank()
         torch.manual_seed(seed)
         np.random.seed(seed)
         random.seed(seed)
@@ -96,104 +105,121 @@ class VPG:
         '''
         observations, actions, log_probs, advs, rewards_to_go = self._buffer.get()
 
-        self._ac.train()
         self._actor_opt.zero_grad()
         pi_loss = self._compute_pi_loss(observations, actions, advs)
         pi_loss.backward()
+        mpi.mpi_avg_grads(self._ac.actor)
         self._actor_opt.step()
 
         for _ in range(self._train_v_iters):
             self._critic_opt.zero_grad()
             v_loss = self._compute_v_loss(observations, rewards_to_go)
             v_loss.backward()
+            mpi.mpi_avg_grads(self._ac.critic)
             self._critic_opt.step()
 
-        return pi_loss, v_loss
+        self._logger.add(PiLoss=pi_loss.item(), VLoss=v_loss.item())
 
 
     def _train_one_epoch(self):
         '''
         One epoch training
         '''
+        step = 0
         returns = []
         eps_len = []
-        step = 0
 
         while step < self._steps_per_epoch:
             observation = self._env.reset()
             rewards = []
 
             while True:
-                self._ac.eval()
                 action, log_prob, value = self._ac.step(observation)
                 next_observation, reward, terminated, _ = self._env.step(action)
-                self._buffer.add(observation, float(action), reward, float(value), float(log_prob), terminated)
+                self._buffer.add(observation, action, reward, float(value), float(log_prob))
                 observation = next_observation
                 rewards.append(reward)
+                step += 1
 
-                if terminated or (len(rewards) == self._max_ep_len):
-                    return_, ep_len = sum(rewards), len(rewards)
-                    step += ep_len
-                    returns.append(return_)
-                    eps_len.append(ep_len)
+                if terminated or (len(rewards) == self._max_ep_len) or (step == self._steps_per_epoch - 1):
+                    if terminated:
+                        value = 0
+                        return_, ep_len = sum(rewards), len(rewards)
+                        returns.append(return_)
+                        eps_len.append(ep_len)
+                        self._logger.add(Return=returns, EpLen=eps_len)
+                    else:
+                        _, _, value = self._ac.step(observation)
+                    self._buffer.finish_rollout(value)
                     break
-
-        pi_loss, v_loss = self._update_params()
-        return pi_loss, v_loss, returns, eps_len
+        self._update_params()
 
 
     def train(self):
-        print('---Training---')
+        mpi.print_one('---Training---')
         for epoch in range(1, self._epochs + 1):
-            pi_loss, v_loss, returns, eps_len = self._train_one_epoch()
-            print('epoch: %3d \t pi_loss: %.3f \t v_loss: %.3f \t return: %.3f \t ep_len: %.3f'%
-                (epoch, pi_loss, v_loss, np.mean(returns), np.mean(eps_len)))
-            if self._goal and np.mean(returns) >= self._goal:
-                print(f'Environment solved at epoch {epoch}!')
-                break
+            self._train_one_epoch()
+            # print('epoch: %3d \t pi_loss: %.3f \t v_loss: %.3f \t return: %.3f \t ep_len: %.3f'%
+            #     (epoch, pi_loss, v_loss, np.mean(returns), np.mean(eps_len)))
+            # if self._goal and np.mean(returns) >= self._goal:
+            #     print(f'Environment solved at epoch {epoch}!')
+            #     break
+            self._logger.log_tabular('Epoch', epoch)
+            self._logger.log_tabular('PiLoss')
+            self._logger.log_tabular('VLoss')
+            self._logger.log_tabular('Return')
+            self._logger.log_tabular('EpLen')
+            self._logger.log()
         self._env.close()
         if self._model_path:
-            torch.save(self._ac.actor.state_dict(), self._model_path)
-            print(f'Model is saved successfully at {self._model_path}')
+            if mpi.proc_rank() == 0:
+                torch.save(self._ac.actor.state_dict(), self._model_path)
+                print(f'Model is saved successfully at {self._model_path}')
         if self._vid_path:
-            self.test(vid_path=self._vid_path)
-            print(f'Video is renderred successfully at {self._vid_path}')
+            if mpi.proc_rank() == 0:
+                self.test(vid_path=self._vid_path)
+                print(f'Video is renderred successfully at {self._vid_path}')
         if self._plot_path:
             pass
 
 
     def test(self, vid_path: str=None, model_path: str=None):
-        print('---Evaluating---')
-        if model_path:
-            self._ac.actor.load_state_dict(torch.load(model_path))
-        if vid_path:
-            vr = video_recorder.VideoRecorder(self._env, path=vid_path)
-        obs = self._env.reset()
-        step = total_reward =0
-        while True:
-            self._env.render()
+        if mpi.proc_rank() == 0:
+            print('---Evaluating---')
+            if model_path:
+                self._ac.actor.load_state_dict(torch.load(model_path))
             if vid_path:
-                vr.capture_frame()
-            action, _, _ = self._ac.step(obs)
-            obs, reward, terminated, _ = self._env.step(action)
-            step += 1
-            total_reward += reward
-            if terminated:
-                print(f'Episode finished after {step} steps\nTotal reward {total_reward}')
-                break
-        self._env.close()
+                vr = video_recorder.VideoRecorder(self._env, path=vid_path)
+            obs = self._env.reset()
+            step = total_reward =0
+            while True:
+                self._env.render()
+                if vid_path:
+                    vr.capture_frame()
+                action, _, _ = self._ac.step(obs)
+                obs, reward, terminated, _ = self._env.step(action)
+                step += 1
+                total_reward += reward
+                if terminated:
+                    print(f'Episode finished after {step} steps\nTotal reward {total_reward}')
+                    break
+            self._env.close()
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Vanilla Policy Gradient')
-    parser.add_argument('--env', type=str, choices=['CartPole-v0', 'Pendulum-v1'],
+    parser.add_argument('--env', type=str, choices=['CartPole-v0', 'HalfCheetah-v2'],
                         help='OpenAI enviroment name')
     parser.add_argument('--eval', action='store_true',
                         help='Whether to enable evaluation')
     parser.add_argument('--model-path', type=str,
                         help='Model path to load')
+    parser.add_argument('--cpu', type=int,
+                        help='Number of CPUs for parallel computing')
     parser.add_argument('--seed', type=int, default=1,
                         help='Random seed')
+    parser.add_argument('--hidden-layers', nargs='+', type=int,
+                        help='Hidden layers size of policy & value function networks')
     parser.add_argument('--pi-lr', type=float,
                         help='Learning rate for policy optimizer')
     parser.add_argument('--v-lr', type=float,
@@ -219,6 +245,8 @@ if __name__ == '__main__':
     parser.add_argument('--plot', action='store_true',
                         help='Whether to plot training statistics and save as image')
     args = parser.parse_args()
+    mpi.mpi_fork(args.cpu)
+    mpi.setup_pytorch_for_mpi()
 
     if not args.eval and args.model_path or (not args.model_path and args.eval):
         parser.error('Arguments --eval & --model-path must be specified together.')
