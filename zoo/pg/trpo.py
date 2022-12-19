@@ -8,25 +8,28 @@ from torch.distributions import kl_divergence
 from network import MLPActorCritic
 from utils import *
 import argparse
-from os.path import join
 from copy import deepcopy
 import random
+from os.path import dirname, join, realpath
+import sys
+dir_path = dirname(dirname(realpath(__file__)))
+sys.path.insert(1, join(dir_path, '..'))
+import common.mpi_utils as mpi
+from common.logger import Logger
 
 
 class TRPO:
 
 
-    def __init__(self, args,
-                model_dir='./output/models',
-                video_dir='./output/videos',
-                figure_dir='./output/figures'):
+    def __init__(self, args):
         '''
         TRPO & Natural Policy Gradient w/ Actor-Critic approach & 
             Generalized Advantage Estimators & 
             using rewards-to-go as target for the value function
 
-        :param env: (str) OpenAI's environment name
+        :param env: (str) OpenAI environment name
         :param seed: (int) Seed for RNG
+        :param hidden_layers: (List[int]) Hidden layers size of policy & value function networks
         :param v_lr: (float) Learning rate for value function optimizer
         :param epochs: (int) Number of epochs
         :param steps_per_epoch: (int) Maximum number of steps per epoch
@@ -48,61 +51,65 @@ class TRPO:
         :param video_dir: (str) Video directory
         :param figure_dir: (str) Figure directory
         '''
-        self._env = gym.make(args.env)
+        self.env = gym.make(args.env)
         self._seed(args.seed)
-        observation_space = self._env.observation_space
-        action_space = self._env.action_space
-        self._ac = MLPActorCritic(observation_space, action_space)
+        observation_space = self.env.observation_space
+        action_space = self.env.action_space
+        self.ac = MLPActorCritic(observation_space, action_space, args.hidden_layers)
+        mpi.sync_params(self.ac)
         if not args.eval:
-            self._critic_opt = Adam(self._ac.critic.parameters(), lr=args.v_lr)
-            self._epochs = args.epochs
-            self._steps_per_epoch = args.steps_per_epoch
-            self._train_v_iters = args.train_v_iters
-            self._max_ep_len = args.max_ep_len
-            self._buffer = Buffer(args.max_ep_len, args.gamma, args.lamb)
-            self._goal = args.goal
-            self._delta = args.delta
-            self._damping_coeff = args.damping_coeff
-            self._cg_iters = args.cg_iters
+            self.critic_opt = Adam(self.ac.critic.parameters(), lr=args.v_lr)
+            self.epochs = args.epochs
+            self.steps_per_epoch = int(args.steps_per_epoch / mpi.n_procs())
+            self.train_v_iters = args.train_v_iters
+            self.max_ep_len = args.max_ep_len
+            self.buffer = MPIBuffer(self.steps_per_epoch, args.gamma, args.lamb)
+            self.goal = args.goal
+            self.delta = args.delta
+            self.damping_coeff = args.damping_coeff
+            self.cg_iters = args.cg_iters
             if args.linesearch:
-                self._linesearch = True
-                self._backtrack_iters = args.backtrack_iters
-                self._backtrack_coeff = args.backtrack_coeff
+                self.linesearch = True
+                self.backtrack_iters = args.backtrack_iters
+                self.backtrack_coeff = args.backtrack_coeff
                 algo = 'TRPO'
             else:
-                self._linesearch = False
+                self.linesearch = False
                 algo = 'NPG'
-            print(f'Algorithm: {algo}\nEnvironment: {args.env}')
-            basename = f'{algo}-{args.env}'
-            self._model_path = join(model_dir, f'{basename}.pth') if args.save else None
-            self._vid_path = join(video_dir, f'{basename}.mp4') if args.render else None
-            self._plot_path = join(figure_dir, f'{basename}.png') if args.plot else None
+            self.goal = args.goal
+            self.save = args.save
+            self.save_freq = args.save_freq
+            self.render = args.render
+            self.plot = args.plot
+            self.logger = Logger(args.env, algo, args.model_dir, args.video_dir, args.figure_dir)
+            self.logger.log(f'Algorithm: {algo}\nEnvironment: {args.env}\nSeed: {args.seed}')
+            self.logger.set_saver(self.ac)
 
 
     def _seed(self, seed: int):
         '''
         Set global seed
         '''
+        seed += 10 * mpi.proc_rank()
         torch.manual_seed(seed)
         np.random.seed(seed)
         random.seed(seed)
-        self._env.seed(seed)
+        self.env.seed(seed)
 
 
     def _update_params(self):
         '''
         Update pi's & v's parameters
         '''
-        observations, actions, logps_old, advs, rewards_to_go = self._buffer.get()
+        observations, actions, logps_old, advs, rewards_to_go = self.buffer.get()
         with torch.no_grad():
-            # TODO: logps_old
-            pi_old, _ = self._ac.actor(observations, actions)
+            pi_old, _ = self.ac.actor(observations, actions)
 
         def pi_loss_kl(need_loss: str, need_kl: str):
             '''
             Compute surrogate loss and average KL divergence
             '''
-            pi, logps = self._ac.actor(observations, actions)
+            pi, logps = self.ac.actor(observations, actions)
             loss_kl = dict()
 
             if need_loss:
@@ -119,7 +126,7 @@ class TRPO:
         def compute_kl():
             return pi_loss_kl(False, True)['kl']
 
-        @torch.no_grad()
+        # @torch.no_grad()
         def compute_pi_loss_kl():
             loss_kl = pi_loss_kl(True, True)
             return loss_kl['loss'], loss_kl['kl']
@@ -128,28 +135,25 @@ class TRPO:
             '''
             Compute value function loss
             '''
-            values = self._ac.critic(observations)
+            values = self.ac.critic(observations)
             loss = ((values - rewards_to_go) ** 2).mean()
             return loss
 
         pi_loss = compute_pi_loss()
         pi_loss_old = pi_loss.item()
-        v_loss_old = compute_v_loss().item()
         # Compute policy gradient vector
-        g = flatten(grad(pi_loss, self._ac.actor.parameters()))
+        g = flatten(grad(pi_loss, self.ac.actor.parameters()))
 
         def Fx(x):
             '''
-            Compute the product of Fisher Information Matrix (FIM) w/ vector :param x:
+            Compute the product Fx of Fisher Information Matrix (FIM) w/ vector :param x:
                 FIM: F = grad**2 kl
             '''
             kl = compute_kl()
-            grad_kl = grad(kl, self._ac.actor.parameters(), create_graph=True)
-            grad_kl = flatten(grad_kl)
+            grad_kl = flatten(grad(kl, self.ac.actor.parameters(), create_graph=True))
             grad_kl_x = (grad_kl * x).sum()
-            grad2_kl_x = grad(grad_kl_x, self._ac.actor.parameters())
-            Fx_ = flatten(grad2_kl_x)
-            return Fx_ + self._damping_coeff * x
+            Fx_ = flatten(grad(grad_kl_x, self.ac.actor.parameters()))
+            return Fx_ + self.damping_coeff * x
 
         '''
         Compute natural gradient: x = (F^-1)g
@@ -157,8 +161,8 @@ class TRPO:
             => step_size = sqrt(2*delta / (g^T)(F^-1)g)
                          = sqrt(2*delta / (x^T)Fx)
         '''
-        x = conjugate_gradient(Fx, g, self._cg_iters)
-        step_size = torch.sqrt(2 * self._delta / (torch.dot(x, Fx(x)) + 1e-8))
+        x = conjugate_gradient(Fx, g, self.cg_iters)
+        step_size = torch.sqrt(2 * self.delta / (torch.dot(x, Fx(x)) + 1e-8))
 
         '''
         Update pi's parameters (theta):
@@ -169,50 +173,45 @@ class TRPO:
                 theta := theta + step_size * (F^-1)g
                        = theta + step_size * x
         '''
-        actor_old = deepcopy(self._ac.actor)
         old_params = []
-        for param in actor_old.parameters():
+        for param in deepcopy(self.ac.actor).parameters():
             old_params.append(param.data.view(-1))
         old_params = torch.cat(old_params)
 
-        @torch.no_grad()
         def linesearch(scale):
             params = old_params - scale * step_size * x
             prev_idx = 0
-            for param in self._ac.actor.parameters():
+            for param in self.ac.actor.parameters():
                 size = int(np.prod(list(param.size())))
                 param.data.copy_(params[prev_idx:prev_idx + size].view(param.size()))
                 prev_idx += size
 
             pi_loss, kl = compute_pi_loss_kl()
-            return pi_loss.item(), kl.item()
+            return pi_loss, kl.item()
 
-        if self._linesearch:
-            for j in range(self._backtrack_iters):
-                pi_loss, kl = linesearch(self._backtrack_coeff ** j)
-                if kl <= self._delta and pi_loss <= pi_loss_old:
-                    print('Accepting new params at step %d of line search.' % j)
+        if self.linesearch:
+            for j in range(self.backtrack_iters):
+                pi_loss, kl = linesearch(self.backtrack_coeff ** j)
+                if kl <= self.delta and pi_loss <= pi_loss_old:
+                    self.logger.log('Accepting new params at step %d of line search'%j)
                     break
-                if j == self._backtrack_iters - 1:
-                    print('Line search failed! Keeping old params.')
+                if j == self.backtrack_iters - 1:
+                    self.logger.log('Line search failed! Keeping old params')
                     pi_loss, kl = linesearch(0)
+            pi_loss.backward()
+            mpi.mpi_avg_grads(self.ac.actor)
         else:
             pi_loss, kl = linesearch(1.0)
         
         # Update v's parameters
-        for _ in range(self._train_v_iters):
-            self._critic_opt.zero_grad()
+        for _ in range(self.train_v_iters):
+            self.critic_opt.zero_grad()
             v_loss = compute_v_loss()
             v_loss.backward()
-            self._critic_opt.step()
+            mpi.mpi_avg_grads(self.ac.critic)
+            self.critic_opt.step()
 
-        update_info = dict()
-        # update_info['pi_loss_old'] = pi_loss_old
-        # update_info['v_loss_old'] = v_loss_old
-        update_info['pi_loss'] = pi_loss
-        update_info['v_loss'] = v_loss.item()
-        update_info['kl'] = kl
-        return update_info
+        self.logger.add(PiLoss=pi_loss.item(), VLoss=v_loss.item(), KL=kl)
 
 
     def _train_one_epoch(self):
@@ -223,122 +222,140 @@ class TRPO:
         eps_len = []
         step = 0
 
-        while step <= self._steps_per_epoch:
-            observation = self._env.reset()
+        while step < self.steps_per_epoch:
+            observation = self.env.reset()
             rewards = []
 
             while True:
-                action, log_prob, value = self._ac.step(observation)
-                next_observation, reward, terminated, _ = self._env.step(action)
-                self._buffer.add(observation, float(action), reward, float(value), float(log_prob), terminated)
+                action, log_prob, value = self.ac.step(observation)
+                next_observation, reward, terminated, _ = self.env.step(action)
+                self.buffer.add(observation, action, reward, float(value), float(log_prob))
                 observation = next_observation
                 rewards.append(reward)
+                step += 1
 
-                if terminated or (len(rewards) == self._max_ep_len):
-                    return_, ep_len = sum(rewards), len(rewards)
-                    step += ep_len
-                    eps_len.append(ep_len)
-                    returns.append(return_)
+                if terminated or len(rewards) == self.max_ep_len or step == self.steps_per_epoch:
+                    if terminated:
+                        value = 0
+                        return_, ep_len = sum(rewards), len(rewards)
+                        returns.append(return_)
+                        eps_len.append(ep_len)
+                        self.logger.add(Return=returns, EpLen=eps_len)
+                    else:
+                        _, _, value = self.ac.step(observation)
+                    self.buffer.finish_rollout(value)
                     break
-        epoch_info = self._update_params()
-        epoch_info['returns'] = returns
-        epoch_info['eps_len'] = eps_len
-        return epoch_info
+        self._update_params()
 
 
     def train(self):
-        print('---Training---')
-        for epoch in range(1, self._epochs + 1):
-            info = self._train_one_epoch()
-            avg_return = np.mean(info['returns'])
-            print('Epoch: %3d \tpi_loss: %.3f \tv_loss: %.3f \tavg_kl: %.4f \treturn: %.3f \tep_len: %.3f'%
-                (epoch, info['pi_loss'], info['v_loss'], info['kl'], avg_return, np.mean(info['eps_len'])))
-            if self._goal and avg_return >= self._goal:
-                print(f'Environment solved at epoch {epoch}!')
-                break
-        self._env.close()
-        if self._model_path:
-            torch.save(self._ac.actor.state_dict(), self._model_path)
-            print(f'Model is saved successfully at {self._model_path}')
-        if self._vid_path:
-            self.test(vid_path=self._vid_path)
-            print(f'Video is renderred successfully at {self._vid_path}')
-        if self._plot_path:
+        self.logger.log('---Training---')
+        for epoch in range(1, self.epochs + 1):
+            self._train_one_epoch()
+            self.logger.log_tabular('Epoch', epoch)
+            self.logger.log_tabular('PiLoss')
+            self.logger.log_tabular('VLoss')
+            self.logger.log_tabular('KL')
+            self.logger.log_tabular('Return')
+            self.logger.log_tabular('EpLen')
+            self.logger.log()
+
+            if self.save and epoch % self.save_freq == 0:
+                self.logger.save_state()
+        self.env.close()
+        if self.render:
+            self.logger.render(self.env)
+        if self.plot:
             pass
 
 
     def test(self, vid_path: str=None, model_path: str=None):
-        print('---Evaluating---')
-        if model_path:
-            self._ac.actor.load_state_dict(torch.load(model_path))
-        if vid_path:
-            vr = video_recorder.VideoRecorder(self._env, path=vid_path)
-        obs = self._env.reset()
-        step = total_reward = 0
-        while True:
-            self._env.render()
+        if mpi.proc_rank() == 0:
+            print('---Evaluating---')
+            if model_path:
+                self.ac.actor.load_state_dict(torch.load(model_path))
             if vid_path:
-                vr.capture_frame()
-            action, _, _ = self._ac.step(obs)
-            obs, reward, terminated, _ = self._env.step(action)
-            step += 1
-            total_reward += reward
-            if terminated:
-                print(f'Episode finished after {step} steps\nTotal reward: {total_reward}')
-                break
-        self._env.close()
+                vr = video_recorder.VideoRecorder(self.env, path=vid_path)
+            obs = self.env.reset()
+            step = total_reward = 0
+            while True:
+                self.env.render()
+                if vid_path:
+                    vr.capture_frame()
+                action, _, _ = self.ac.step(obs)
+                obs, reward, terminated, _ = self.env.step(action)
+                step += 1
+                total_reward += reward
+                if terminated:
+                    print(f'Episode finished after {step} steps\nTotal reward: {total_reward}')
+                    break
+            self.env.close()
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Trust Region Policy Optimization')
-    parser.add_argument('--env', type=str, choices=['CartPole-v0', 'Pendulum-v1'],
+    parser.add_argument('--env', type=str, choices=['CartPole-v0', 'HalfCheetah-v2'],
                         help='OpenAI enviroment name')
     parser.add_argument('--eval', action='store_true',
                         help='Whether to enable evaluation')
     parser.add_argument('--model-path', type=str,
                         help='Model path to load')
+    parser.add_argument('--cpu', type=int, default=4,
+                        help='Number of CPUs for parallel computing')
     parser.add_argument('--seed', type=int, default=0,
-                        help='Random seed')
-    parser.add_argument('--v-lr', type=float,
+                        help='Seed for RNG')
+    parser.add_argument('--hidden-layers', nargs='+', type=int,
+                        help='Hidden layers size of policy & value function networks')
+    parser.add_argument('--v-lr', type=float, default=1e-3,
                         help='Learning rate for value function optimizer')
-    parser.add_argument('--epochs', type=int,
+    parser.add_argument('--epochs', type=int, default=50,
                         help='Number of epochs')
-    parser.add_argument('--steps-per-epoch', type=int,
+    parser.add_argument('--steps-per-epoch', type=int, default=4000,
                         help='Maximum number of steps for each epoch')
-    parser.add_argument('--train-v-iters', type=int,
+    parser.add_argument('--train-v-iters', type=int, default=80,
                         help='Number of gradient descent steps to take on value function per epoch')
-    parser.add_argument('--max-ep-len', type=int,
+    parser.add_argument('--max-ep-len', type=int, default=1000,
                         help='Maximum episode/trajectory length')
-    parser.add_argument('--gamma', type=float,
+    parser.add_argument('--gamma', type=float, default=0.99,
                         help='Discount factor')
-    parser.add_argument('--lamb', type=float,
+    parser.add_argument('--lamb', type=float, default=0.97,
                         help='Lambda for Generalized Advantage Estimation')
     parser.add_argument('--goal', type=int,
                         help='Total reward threshold for early stopping')
-    parser.add_argument('--delta', type=float,
+    parser.add_argument('--delta', type=float, default=0.01,
                         help='KL divergence threshold')
-    parser.add_argument('--damping-coeff', type=float,
+    parser.add_argument('--damping-coeff', type=float, default=0.1,
                         help='Damping coefficient')
-    parser.add_argument('--cg-iters', type=int,
+    parser.add_argument('--cg-iters', type=int, default=10,
                         help='Number of iterations of Conjugate gradient to perform')
-    parser.add_argument('--linesearch', action='store_true', 
+    parser.add_argument('--linesearch', action='store_false', 
                         help='Whether to use backtracking line-search')
-    parser.add_argument('--backtrack-iters', type=int,
+    parser.add_argument('--backtrack-iters', type=int, default=10,
                         help='Maximum number of steps in the backtracking line search')
-    parser.add_argument('--backtrack-coeff', type=float,
+    parser.add_argument('--backtrack-coeff', type=float, default=0.8,
                         help='how far back to step during backtracking line search')
     parser.add_argument('--save', action='store_true',
                         help='Whether to save training model')
+    parser.add_argument('--save-freq', type=int, default=10,
+                        help='Model saving frequency')
     parser.add_argument('--render', action='store_true',
                         help='Whether to save training result as video')
     parser.add_argument('--plot', action='store_true',
                         help='Whether to plot training statistics and save as image')
+    parser.add_argument('--model-dir', type=str, default='./output/models',
+                        help='Where to save the model')
+    parser.add_argument('--video-dir', type=str, default='./output/videos',
+                        help='Where to save the video output')
+    parser.add_argument('--figure-dir', type=str, default='./output/figures',
+                        help='Where to save the plots')
     args = parser.parse_args()
     
     if not args.eval and args.model_path or (not args.model_path and args.eval):
         parser.error('Arguments --eval & --model-path must be specified at the same time.')
     if args.linesearch and not (args.backtrack_coeff and args.backtrack_iters):
         parser.error('Arguments --backtrack-iters & --backtrack-coeff are required when enabling --linesearch.')
+    mpi.mpi_fork(args.cpu)
+    mpi.setup_pytorch_for_mpi()
 
     agent = TRPO(args)
     if args.eval:

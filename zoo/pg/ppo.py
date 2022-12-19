@@ -6,24 +6,24 @@ from gym.wrappers.monitoring import video_recorder
 import argparse
 from os.path import join
 import random
-from utils import Buffer
+from utils import Buffer, MPIBuffer
 from network import MLPActorCritic
+import common.mpi_utils as mpi
+from common.logger import Logger
 
 
 class PPO:
 
 
-    def __init__(self, args,
-                model_dir='./output/models',
-                video_dir='./output/videos',
-                figure_dir='./output/figures'):
+    def __init__(self, args):
         '''
         PPO w/ Actor-Critic approach & 
             Generalized Advantage Estimators & 
             using rewards-to-go as target for the value function
 
-        :param env: (str) OpenAI's environment name
+        :param env: (str) OpenAI environment name
         :param seed: (int) Seed for RNG
+        :param hidden_layers: (List[int]) Hidden layers size of policy & value function networks
         :param pi_lr: (float )Learning rate for policy opitimizer
         :param v_lr: (float) Learning rate for value function optimizer
         :param epochs: (int) Number of epochs
@@ -38,91 +38,97 @@ class PPO:
         :param clip_ratio: (float) Hyperparamter for clipping the policy objective
         :param goal: (float) Total reward threshold for early stopping
         :param save: (bool) Whether to save the final model
+        :param save_freq: (int) Model saving frequency
         :param render: (bool) Whether to render the training result in video
         :param plot: (bool) Whether to plot the statistics and save as image
         :param model_dir: (str) Model directory
         :param video_dir: (str) Video directory
         :param figure_dir: (str) Figure directory
         '''
-        self._env = gym.make(args.env)
+        self.env = gym.make(args.env)
         self._seed(args.seed)
-        observation_space = self._env.observation_space
-        action_space = self._env.action_space
-        self._ac = MLPActorCritic(observation_space, action_space)
+        observation_space = self.env.observation_space
+        action_space = self.env.action_space
+        self.ac = MLPActorCritic(observation_space, action_space, args.hidden_layers)
+        mpi.sync_params(self.ac)
         if not args.eval:
-            self._actor_opt = Adam(self._ac.actor.parameters(), lr=args.pi_lr)
-            self._critic_opt = Adam(self._ac.critic.parameters(), lr=args.v_lr)
-            self._epochs = args.epochs
-            self._steps_per_epoch = args.steps_per_epoch
-            self._train_pi_iters = args.train_pi_iters
-            self._train_v_iters = args.train_v_iters
-            self._max_ep_len = args.max_ep_len
-            self._buffer = Buffer(args.max_ep_len, args.gamma, args.lamb)
-            self._kl_target = args.kl_target
+            self.actor_opt = Adam(self.ac.actor.parameters(), lr=args.pi_lr)
+            self.critic_opt = Adam(self.ac.critic.parameters(), lr=args.v_lr)
+            self.epochs = args.epochs
+            self.steps_per_epoch = int(args.steps_per_epoch / mpi.n_procs())
+            self.train_pi_iters = args.train_pi_iters
+            self.train_v_iters = args.train_v_iters
+            self.max_ep_len = args.max_ep_len
+            self.buffer = MPIBuffer(self.steps_per_epoch, args.gamma, args.lamb)
+            self.kl_target = args.kl_target
             if args.clip:
-                self._clip_ratio = args.clip_ratio
+                self.clip_ratio = args.clip_ratio
             else:
                 pass
-            self._goal = args.goal
-            basename = f'PPO-{args.env}'
-            self._model_path = join(model_dir, f'{basename}.pth') if args.save else None
-            self._vid_path = join(video_dir, f'{basename}.mp4') if args.render else None
-            self._plot_path = join(figure_dir, f'{basename}.png') if args.plot else None
+            self.goal = args.goal
+            self.save = args.save
+            self.save_freq = args.save_freq
+            self.render = args.render
+            self.plot = args.plot
+            self.logger = Logger(args.env, 'PPO', args.model_dir, args.video_dir, args.figure_dir)
+            self.logger.log(f'Algorithm: PPO\nEnvironment: {args.env}\nSeed: {args.seed}')
+            self.logger.set_saver(self.ac)
 
 
     def _seed(self, seed: int):
         '''
         Set global seed
         '''
+        seed += 10 * mpi.proc_rank()
         torch.manual_seed(seed)
         np.random.seed(seed)
         random.seed(seed)
-        self._env.seed(seed)
+        self.env.seed(seed)
 
 
     def _update_params(self):
-        observations, actions, logps_old, advs, rewards_to_go = self._buffer.get()
+        observations, actions, logps_old, advs, rewards_to_go = self.buffer.get()
 
         def compute_pi_loss():
-            pi, logp = self._ac.actor(observations, actions)
-            ratio = torch.exp(logp - logps_old)
-            loss_cpi = ratio * advs
-            clip_advs = ((1 + self._clip_ratio) * (advs > 0) + (1 - self._clip_ratio) * (advs < 0)) * advs
-            pi_loss = -torch.min(loss_cpi, clip_advs).mean()
+            pi, logps = self.ac.actor(observations, actions)
+            log_ratio = logps - logps_old
+            loss_cpi = torch.exp(log_ratio) * advs
+            clip_advs = ((1 + self.clip_ratio) * (advs > 0) + (1 - self.clip_ratio) * (advs < 0)) * advs
+            pi_loss = -torch.min(loss_cpi, clip_advs).mean() 
 
-            # approximated KL
-            approx_kl = (logps_old - logp).mean()
-            return pi_loss, approx_kl.item()
+            # approximated avg KL
+            # approx_kl = (torch.exp(log_ratio) - 1 - log_ratio).mean().item() # stable-baseline3's approx formula
+            approx_kl = (-log_ratio).mean().item()
+            return pi_loss, approx_kl
 
 
         def compute_v_loss():
             '''
             Compute value function loss
             '''
-            values = self._ac.critic(observations)
+            values = self.ac.critic(observations)
             v_loss = ((values - rewards_to_go) ** 2).mean()
             return v_loss
 
-        for step in range(1, self._train_pi_iters + 1):
-            self._actor_opt.zero_grad()
-            pi_loss, kl = compute_pi_loss()
-            if kl > 1.5 * self._kl_target:
-                print(f'Early stopping at step {step} due to exceed KL target')
+        for step in range(1, self.train_pi_iters + 1):
+            self.actor_opt.zero_grad()
+            pi_loss, approx_kl = compute_pi_loss()
+            kl = mpi.mpi_avg(approx_kl)
+            if kl > 1.5 * self.kl_target:
+                self.logger.log(f'Early stopping at step {step} due to exceeding KL target')
                 break
             pi_loss.backward()
-            self._actor_opt.step()
+            mpi.mpi_avg_grads(self.ac.actor)
+            self.actor_opt.step()
 
-        for _ in range(self._train_v_iters):
-            self._critic_opt.zero_grad()
+        for _ in range(self.train_v_iters):
+            self.critic_opt.zero_grad()
             v_loss = compute_v_loss()
             v_loss.backward()
-            self._critic_opt.step()
-
-        update_info = dict()
-        update_info['pi_loss'] = pi_loss.item()
-        update_info['v_loss'] = v_loss.item()
-        update_info['kl'] = kl
-        return update_info
+            mpi.mpi_avg_grads(self.ac.critic)
+            self.critic_opt.step()
+        
+        self.logger.add(PiLoss=pi_loss.item(), VLoss=v_loss.item(), KL=kl)
 
 
     def _train_one_epoch(self):
@@ -133,120 +139,138 @@ class PPO:
         eps_len = []
         step = 0
 
-        while step <= self._steps_per_epoch:
-            observation = self._env.reset()
+        while step < self.steps_per_epoch:
+            observation = self.env.reset()
             rewards = []
 
             while True:
-                action, log_prob, value = self._ac.step(observation)
-                next_observation, reward, terminated, _ = self._env.step(action)
-                self._buffer.add(observation, float(action), reward, float(value), float(log_prob), terminated)
+                action, log_prob, value = self.ac.step(observation)
+                next_observation, reward, terminated, _ = self.env.step(action)
+                self.buffer.add(observation, action, reward, float(value), float(log_prob))
                 observation = next_observation
                 rewards.append(reward)
+                step += 1
 
-                if terminated or (len(rewards) == self._max_ep_len):
-                    return_, ep_len = sum(rewards), len(rewards)
-                    step += ep_len
-                    eps_len.append(ep_len)
-                    returns.append(return_)
+                if terminated or (len(rewards) == self.max_ep_len) or (step == self.steps_per_epoch):
+                    if terminated:
+                        value = 0
+                        return_, ep_len = sum(rewards), len(rewards)
+                        returns.append(return_)
+                        eps_len.append(ep_len)
+                        self.logger.add(Return=returns, EpLen=eps_len)
+                    else:
+                        _, _, value = self.ac.step(observation)
+                    self.buffer.finish_rollout(value)
                     break
-        info = self._update_params()
-        info['returns'] = returns
-        info['eps_len'] = eps_len
-        return info
+        self._update_params()
 
 
     def train(self):
-        print('---Training---')
-        for epoch in range(1, self._epochs + 1):
-            info = self._train_one_epoch()
-            avg_return = np.mean(info['returns'])
-            print('Epoch: %3d \tpi_loss: %.3f \tv_loss: %.3f \tavg_kl: %.4f \treturn: %.3f \tep_len: %.3f'%
-                (epoch, info['pi_loss'], info['v_loss'], info['kl'], avg_return, np.mean(info['eps_len'])))
-            if self._goal and avg_return >= self._goal:
-                print(f'Environment solved at epoch {epoch}!')
-                break
-        self._env.close()
-        if self._model_path:
-            torch.save(self._ac.actor.state_dict(), self._model_path)
-            print(f'Model is saved successfully at {self._model_path}')
-        if self._vid_path:
-            self.test(vid_path=self._vid_path)
-            print(f'Video is renderred successfully at {self._vid_path}')
-        if self._plot_path:
+        self.logger.log('---Training---')
+        for epoch in range(1, self.epochs + 1):
+            self._train_one_epoch()
+            self.logger.log_tabular('Epoch', epoch)
+            self.logger.log_tabular('PiLoss')
+            self.logger.log_tabular('VLoss')
+            self.logger.log_tabular('KL')
+            self.logger.log_tabular('Return')
+            self.logger.log_tabular('EpLen')
+            self.logger.log()
+
+            if self.save and epoch % self.save_freq == 0:
+                self.logger.save_state()
+        self.env.close()
+        if self.render:
+            self.logger.render(self.env)
+        if self.plot:
             pass
 
 
     def test(self, vid_path: str=None, model_path: str=None):
-        print('---Evaluating---')
-        if model_path:
-            self._ac.actor.load_state_dict(torch.load(model_path))
-        if vid_path:
-            vr = video_recorder.VideoRecorder(self._env, path=vid_path)
-        obs = self._env.reset()
-        step = total_reward = 0
-        while True:
-            self._env.render()
+        if mpi.proc_rank() == 0:
+            print('---Evaluating---')
+            if model_path:
+                self.ac.actor.load_state_dict(torch.load(model_path))
             if vid_path:
-                vr.capture_frame()
-            action, _, _ = self._ac.step(obs)
-            obs, reward, terminated, _ = self._env.step(action)
-            step += 1
-            total_reward += reward
-            if terminated:
-                print(f'Episode finished after {step} steps\nTotal reward: {total_reward}')
-                break
-        self._env.close()
+                vr = video_recorder.VideoRecorder(self.env, path=vid_path)
+            obs = self.env.reset()
+            step = total_reward = 0
+            while True:
+                self.env.render()
+                if vid_path:
+                    vr.capture_frame()
+                action, _, _ = self.ac.step(obs)
+                obs, reward, terminated, _ = self.env.step(action)
+                step += 1
+                total_reward += reward
+                if terminated:
+                    print(f'Episode finished after {step} steps\nTotal reward: {total_reward}')
+                    break
+            self.env.close()
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Proximal Policy Optimization')
-    parser.add_argument('--env', type=str, choices=['CartPole-v0', 'Pendulum-v1'],
+    parser.add_argument('--env', type=str, choices=['CartPole-v0', 'HalfCheetah-v2'],
                         help='OpenAI enviroment name')
     parser.add_argument('--eval', action='store_true',
                         help='Whether to enable evaluation')
     parser.add_argument('--model-path', type=str,
                         help='Model path to load')
+    parser.add_argument('--cpu', type=int, default=4,
+                        help='Number of CPUs for parallel computing')
     parser.add_argument('--seed', type=int, default=0,
                         help='Random seed')
-    parser.add_argument('--pi-lr', type=float,
+    parser.add_argument('--hidden-layers', nargs='+', type=int,
+                        help='Hidden layers size of policy & value function networks')
+    parser.add_argument('--pi-lr', type=float, default=3e-4,
                         help='Learning rate for policy optimizer')
-    parser.add_argument('--v-lr', type=float,
+    parser.add_argument('--v-lr', type=float, default=1e-3,
                         help='Learning rate for value function optimizer')
-    parser.add_argument('--epochs', type=int,
+    parser.add_argument('--epochs', type=int, default=50,
                         help='Number of epochs')
-    parser.add_argument('--steps-per-epoch', type=int,
+    parser.add_argument('--steps-per-epoch', type=int, default=4000,
                         help='Maximum number of steps for each epoch')
-    parser.add_argument('--train-pi-iters', type=int,
+    parser.add_argument('--train-pi-iters', type=int, default=80,
                         help='Number of gradient descent steps to take on policy loss per epoch')
-    parser.add_argument('--train-v-iters', type=int,
+    parser.add_argument('--train-v-iters', type=int, default=80,
                         help='Number of gradient descent steps to take on value function per epoch')
-    parser.add_argument('--max-ep-len', type=int,
+    parser.add_argument('--max-ep-len', type=int, default=1000,
                         help='Maximum episode/trajectory length')
-    parser.add_argument('--gamma', type=float,
+    parser.add_argument('--gamma', type=float, default=0.99,
                         help='Discount factor')
-    parser.add_argument('--lamb', type=float,
+    parser.add_argument('--lamb', type=float, default=0.97,
                         help='Lambda for Generalized Advantage Estimation')
-    parser.add_argument('--kl-target', type=float,
+    parser.add_argument('--kl-target', type=float, default=0.01,
                         help='KL divergence threshold')
-    parser.add_argument('--clip', action='store_true',
+    parser.add_argument('--clip', action='store_false',
                         help='Whether to use PPO-Clip, use PPO-Penalty otherwise')
-    parser.add_argument('--clip-ratio', type=float,
+    parser.add_argument('--clip-ratio', type=float, default=0.2,
                         help='Hyperparameter for clipping in the policy objective')
     parser.add_argument('--goal', type=int,
                         help='Total reward threshold for early stopping')
     parser.add_argument('--save', action='store_true',
                         help='Whether to save training model')
+    parser.add_argument('--save-freq', type=int, default=10,
+                        help='Model saving frequency')
     parser.add_argument('--render', action='store_true',
                         help='Whether to save training result as video')
     parser.add_argument('--plot', action='store_true',
                         help='Whether to plot training statistics and save as image')
+    parser.add_argument('--model-dir', type=str, default='./output/models',
+                        help='Where to save the model')
+    parser.add_argument('--video-dir', type=str, default='./output/videos',
+                        help='Where to save the video output')
+    parser.add_argument('--figure-dir', type=str, default='./output/figures',
+                        help='Where to save the plots')
     args = parser.parse_args()
     
     if not args.eval and args.model_path or (not args.model_path and args.eval):
         parser.error('Arguments --eval & --model-path must be specified at the same time.')
     if args.clip and not args.clip_ratio:
         parser.error('Argument --clip-ratio is required when --clip is enabled.')
+    mpi.mpi_fork(args.cpu)
+    mpi.setup_pytorch_for_mpi()
 
     agent = PPO(args)
     if args.eval:

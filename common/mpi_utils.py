@@ -84,20 +84,15 @@ def mpi_avg(x):
     return mpi_sum(x) / n_procs()
 
 
-def mpi_mean(x):
-    x = np.array(x, dtype=np.float32)
-    global_sum = mpi_sum(np.sum(x))
-    mean = global_sum / (mpi_sum(x.size))
-    return mean
-
-
 def mpi_mean_std(x):
     '''
     Get mean, standard deviation over data :param x: collected over MPI processes using
-        STD^2 = Var = E(X^2) - (EX)^2
         STD >= 0
+        STD^2 = Var = E(X^2) - (EX)^2
     '''
-    mean = mpi_mean(x)
+    x = np.array(x, dtype=np.float32)
+    global_sum = mpi_sum(np.sum(x))
+    mean = global_sum / (mpi_sum(x.size))
     global_sum_squared = mpi_sum(np.sum(x ** 2))
     std = np.sqrt(global_sum_squared - mean ** 2)
     return mean, std

@@ -1,6 +1,5 @@
 from typing import List
 from abc import ABC, abstractmethod
-
 import torch
 import torch.nn as nn
 from torch.distributions import Categorical, Normal
@@ -175,3 +174,7 @@ class MLPActorCritic(nn.Module):
         action, log_prob = self.actor.step(observation)
         value = self.critic.step(observation)
         return action.numpy(), log_prob.numpy(), value.numpy()
+
+
+    def act(self, observation):
+        return self.step(observation)[0]
