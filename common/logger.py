@@ -1,35 +1,33 @@
-import sys
-from os.path import dirname, join, realpath
-dir_path = dirname(dirname(realpath(__file__)))
-sys.path.insert(1, join(dir_path, '..'))
-from deep_rl_zoo.common.mpi_utils import proc_rank, mpi_mean_std, print_one
-from collections import defaultdict
 import torch
 from gym.wrappers.monitoring import video_recorder
+import time
+from os.path import join
+from collections import defaultdict
+from common.mpi_utils import proc_rank, mpi_mean_std, print_one
 
 
 class Logger:
 
 
-    def __init__(self, env, algo ,model_dir, video_dir, figure_dir):
-        self.basename = f'{algo}-{env}'
+    def __init__(self, env=None, model_dir=None, video_dir=None, figure_dir=None):
+        self.basename = env
         self.model_dir = model_dir
         self.video_dir = video_dir
         self.figure_dir = figure_dir
-        self.record = defaultdict(list)
-        self.current_row = dict()
+        self.records = defaultdict(list)
+        self.current_record = dict()
 
 
     def add(self, **kwargs):
         for key, value in kwargs.items():
-            self.record[key].append(value)
+            self.records[key].append(value)
 
 
     def log_tabular(self, key, value=None):
         if value is None:
-            value, _ = mpi_mean_std(self.record[key][-1])
+            value, _ = mpi_mean_std(self.records[key][-1])
             key = 'Avg' + key
-        self.current_row[key] = value
+        self.current_record[key] = value
 
 
     def log(self, msg=None):
@@ -38,7 +36,7 @@ class Logger:
         else:
             msg = ''
             values = []
-            for key, value in self.current_row.items():
+            for key, value in self.current_record.items():
                 txt_type = '%d' if type(value) == int else '%.4f'
                 msg += key + ': ' + txt_type + '\t'
                 values.append(value)
@@ -52,8 +50,8 @@ class Logger:
     def save_state(self, epoch=None, msg=False):
         if proc_rank() == 0:
             ep_txt = f'-ep{epoch}' if epoch else ''
-            fname = join(self.model_dir, f'{self.basename}{ep_txt}.pth')
-            torch.save(self.model.state_dict, fname)
+            fname = join(self.model_dir, f'{self.basename}{ep_txt}.pt')
+            torch.save(self.model, fname)
             if msg:
                 print(f'Model is saved successfully at {fname}')
 
@@ -65,6 +63,8 @@ class Logger:
             obs = env.reset()
             while True:
                 env.render()
+                time.sleep(1e-3)
+
                 vr.capture_frame()
                 action, _, _ = self.model.step(obs)
                 obs, reward, terminated, _ = env.step(action)

@@ -1,13 +1,7 @@
 from collections import deque
 import numpy as np
 import torch
-import scipy.signal
-import sys
-from os.path import dirname, join, realpath
-dir_path = dirname(dirname(realpath(__file__)))
-sys.path.insert(1, join(dir_path, '..'))
 from common.mpi_utils import mpi_mean_std
-from copy import deepcopy
 
 
 def flatten(tensor):
@@ -43,7 +37,7 @@ class Buffer:
         '''
         :param size: Max size
         :param gamma: Discount factor
-        :param lambda_: Lambda for GAE
+        :param lambda_: Lambda for GAE-Lambda
         '''
         self._gamma = gamma
         self._lambda = lambda_
@@ -64,97 +58,7 @@ class Buffer:
         :param action: action taken at :param observation:
         :param reward: corresponding reward for taking :param action:
         :param value: value of :param observation:
-        :param log_prob:
-        '''
-        if action.size == 1:
-            action = float(action)
-        exp = (observation, action, reward, value, log_prob)
-        self._trajectories.append(exp)
-
-
-    def get(self):
-        '''
-        :return observations: obserations across trajectories
-        :return actions: actions across trajectories
-        :return log_probs: log probabilities across trajectories
-        :return advs: advantage functions across trajectories
-        :return rewards_to_go: rewards-to-go across trajectories
-        '''
-        assert len(self._trajectories) == self._trajectories.maxlen, 'Need more rollouts!'
-
-        observations, actions, log_probs, advs, rewards_to_go = [], [], [], [], []
-        while self._trajectories_start_idx:
-            next_value = gae = reward_to_go = self._last_values.pop(-1)
-            trajectory_start_idx = self._trajectories_start_idx.pop(-1)
-            final_step = len(self._trajectories)
-            observations_, actions_, log_probs_, advs_, rewards_to_go_ = [], [], [], [], []
-
-            while len(self._trajectories) != trajectory_start_idx:
-                observation, action, reward, value, log_prob = self._trajectories.pop()
-                delta = reward + self._gamma * next_value - value
-                next_value = value
-
-                observations_.insert(0, observation)
-                actions_.insert(0, action)
-                log_probs_.insert(0, log_prob)
-
-                step_to_go = final_step - len(self._trajectories)
-                gae = (self._gamma * self._lambda) * gae + delta
-                advs_.insert(0, float(gae))
-
-                reward_to_go = reward + self._gamma * reward_to_go
-                rewards_to_go_.insert(0, float(reward_to_go))
-            observations += observations_
-            actions += actions_
-            log_probs += log_probs_
-            advs += advs_
-            rewards_to_go += rewards_to_go_
-
-        self._trajectories_start_idx = [0]
-        observations = np.array(observations)
-        actions = np.array(actions)
-        advs = np.array(advs)
-        mean, std = np.mean(advs), np.std(advs)
-        advs = (advs - mean) / std
-        rewards_to_go = np.array(rewards_to_go)
-
-        trajectory_data = (torch.as_tensor(observations, dtype=torch.float32),
-                           torch.as_tensor(actions, dtype=torch.float32),
-                           torch.as_tensor(log_probs, dtype=torch.float32),
-                           torch.as_tensor(advs, dtype=torch.float32),
-                           torch.as_tensor(rewards_to_go, dtype=torch.float32))
-        return trajectory_data
-
-
-class MPIBuffer:
-
-
-    def __init__(self, size: int, gamma: float, lambda_: float):
-        '''
-        :param size: max size
-        :param gamma: Discount factor
-        :param lambda_: Lambda for GAE
-        '''
-        self._gamma = gamma
-        self._lambda = lambda_
-        self._trajectories = deque(maxlen=size)
-        self._trajectories_start_idx = [0]
-        self._last_values = []
-
-
-    def finish_rollout(self, last_value):
-        self._last_values.append(last_value)
-        if len(self._trajectories) < self._trajectories.maxlen:
-            self._trajectories_start_idx.append(len(self._trajectories))
-
-
-    def add(self, observation, action, reward, value, log_prob):
-        '''
-        :param observation: observation
-        :param action: action taken at :param observation:
-        :param reward: corresponding reward for taking :param action:
-        :param value: value of :param observation:
-        :param log_prob:
+        :param log_prob: log probability
         '''
         if action.size == 1:
             action = float(action)

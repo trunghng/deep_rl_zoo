@@ -1,21 +1,15 @@
 import gym
-from gym.wrappers.monitoring import video_recorder
 import numpy as np
 import torch
 from torch.optim import Adam
 from torch.autograd import grad
 from torch.distributions import kl_divergence
-from network import MLPActorCritic
-from utils import *
-import argparse
+import argparse, random, os
 from copy import deepcopy
-import random
-from os.path import dirname, join, realpath
-import sys
-dir_path = dirname(dirname(realpath(__file__)))
-sys.path.insert(1, join(dir_path, '..'))
 import common.mpi_utils as mpi
 from common.logger import Logger
+from zoo.pg.network import MLPActorCritic
+from zoo.pg.utils import *
 
 
 class TRPO:
@@ -57,33 +51,32 @@ class TRPO:
         action_space = self.env.action_space
         self.ac = MLPActorCritic(observation_space, action_space, args.hidden_layers)
         mpi.sync_params(self.ac)
-        if not args.eval:
-            self.critic_opt = Adam(self.ac.critic.parameters(), lr=args.v_lr)
-            self.epochs = args.epochs
-            self.steps_per_epoch = int(args.steps_per_epoch / mpi.n_procs())
-            self.train_v_iters = args.train_v_iters
-            self.max_ep_len = args.max_ep_len
-            self.buffer = MPIBuffer(self.steps_per_epoch, args.gamma, args.lamb)
-            self.goal = args.goal
-            self.delta = args.delta
-            self.damping_coeff = args.damping_coeff
-            self.cg_iters = args.cg_iters
-            if args.linesearch:
-                self.linesearch = True
-                self.backtrack_iters = args.backtrack_iters
-                self.backtrack_coeff = args.backtrack_coeff
-                algo = 'TRPO'
-            else:
-                self.linesearch = False
-                algo = 'NPG'
-            self.goal = args.goal
-            self.save = args.save
-            self.save_freq = args.save_freq
-            self.render = args.render
-            self.plot = args.plot
-            self.logger = Logger(args.env, algo, args.model_dir, args.video_dir, args.figure_dir)
-            self.logger.log(f'Algorithm: {algo}\nEnvironment: {args.env}\nSeed: {args.seed}')
-            self.logger.set_saver(self.ac)
+        self.critic_opt = Adam(self.ac.critic.parameters(), lr=args.v_lr)
+        self.epochs = args.epochs
+        self.steps_per_epoch = int(args.steps_per_epoch / mpi.n_procs())
+        self.train_v_iters = args.train_v_iters
+        self.max_ep_len = args.max_ep_len
+        self.buffer = Buffer(self.steps_per_epoch, args.gamma, args.lamb)
+        self.goal = args.goal
+        self.delta = args.delta
+        self.damping_coeff = args.damping_coeff
+        self.cg_iters = args.cg_iters
+        if args.linesearch:
+            self.linesearch = True
+            self.backtrack_iters = args.backtrack_iters
+            self.backtrack_coeff = args.backtrack_coeff
+            algo = 'TRPO'
+        else:
+            self.linesearch = False
+            algo = 'NPG'
+        self.goal = args.goal
+        self.save = args.save
+        self.save_freq = args.save_freq
+        self.render = args.render
+        self.plot = args.plot
+        self.logger = Logger(args.env, args.model_dir, args.video_dir, args.figure_dir)
+        self.logger.log(f'Algorithm: {algo}\nEnvironment: {args.env}\nSeed: {args.seed}')
+        self.logger.set_saver(self.ac)
 
 
     def _seed(self, seed: int):
@@ -126,7 +119,6 @@ class TRPO:
         def compute_kl():
             return pi_loss_kl(False, True)['kl']
 
-        # @torch.no_grad()
         def compute_pi_loss_kl():
             loss_kl = pi_loss_kl(True, True)
             return loss_kl['loss'], loss_kl['kl']
@@ -202,8 +194,7 @@ class TRPO:
             mpi.mpi_avg_grads(self.ac.actor)
         else:
             pi_loss, kl = linesearch(1.0)
-        
-        # Update v's parameters
+
         for _ in range(self.train_v_iters):
             self.critic_opt.zero_grad()
             v_loss = compute_v_loss()
@@ -218,9 +209,7 @@ class TRPO:
         '''
         Perform one training epoch
         '''
-        returns = []
-        eps_len = []
-        step = 0
+        returns, eps_len, step = [], [], 0
 
         while step < self.steps_per_epoch:
             observation = self.env.reset()
@@ -269,37 +258,10 @@ class TRPO:
             pass
 
 
-    def test(self, vid_path: str=None, model_path: str=None):
-        if mpi.proc_rank() == 0:
-            print('---Evaluating---')
-            if model_path:
-                self.ac.actor.load_state_dict(torch.load(model_path))
-            if vid_path:
-                vr = video_recorder.VideoRecorder(self.env, path=vid_path)
-            obs = self.env.reset()
-            step = total_reward = 0
-            while True:
-                self.env.render()
-                if vid_path:
-                    vr.capture_frame()
-                action, _, _ = self.ac.step(obs)
-                obs, reward, terminated, _ = self.env.step(action)
-                step += 1
-                total_reward += reward
-                if terminated:
-                    print(f'Episode finished after {step} steps\nTotal reward: {total_reward}')
-                    break
-            self.env.close()
-
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Trust Region Policy Optimization')
     parser.add_argument('--env', type=str, choices=['CartPole-v0', 'HalfCheetah-v2'],
-                        help='OpenAI enviroment name')
-    parser.add_argument('--eval', action='store_true',
-                        help='Whether to enable evaluation')
-    parser.add_argument('--model-path', type=str,
-                        help='Model path to load')
+                        help='Environment ID')
     parser.add_argument('--cpu', type=int, default=4,
                         help='Number of CPUs for parallel computing')
     parser.add_argument('--seed', type=int, default=0,
@@ -342,23 +304,18 @@ if __name__ == '__main__':
                         help='Whether to save training result as video')
     parser.add_argument('--plot', action='store_true',
                         help='Whether to plot training statistics and save as image')
-    parser.add_argument('--model-dir', type=str, default='./output/models',
+    parser.add_argument('--model-dir', type=str, default='./zoo/pg/output/models/trpo',
                         help='Where to save the model')
-    parser.add_argument('--video-dir', type=str, default='./output/videos',
+    parser.add_argument('--video-dir', type=str, default='./zoo/pg/output/videos/trpo',
                         help='Where to save the video output')
-    parser.add_argument('--figure-dir', type=str, default='./output/figures',
+    parser.add_argument('--figure-dir', type=str, default='./zoo/pg/output/figures/trpo',
                         help='Where to save the plots')
     args = parser.parse_args()
-    
-    if not args.eval and args.model_path or (not args.model_path and args.eval):
-        parser.error('Arguments --eval & --model-path must be specified at the same time.')
+
     if args.linesearch and not (args.backtrack_coeff and args.backtrack_iters):
         parser.error('Arguments --backtrack-iters & --backtrack-coeff are required when enabling --linesearch.')
     mpi.mpi_fork(args.cpu)
     mpi.setup_pytorch_for_mpi()
 
     agent = TRPO(args)
-    if args.eval:
-        agent.test(model_path=args.model_path)
-    else:
-        agent.train()
+    agent.train()

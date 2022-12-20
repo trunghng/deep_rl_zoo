@@ -1,16 +1,12 @@
-from os.path import dirname, join, realpath
-import sys
-import argparse
-import random
 import gym
-from gym.wrappers.monitoring import video_recorder
 import torch
 from torch.optim import Adam
 import numpy as np
-from network import MLPActorCritic
-from utils import Buffer, MPIBuffer
+import argparse, random
 import common.mpi_utils as mpi
 from common.logger import Logger
+from zoo.pg.network import MLPActorCritic
+from zoo.pg.utils import Buffer
 
 
 class VPG:
@@ -47,21 +43,20 @@ class VPG:
         action_space = self.env.action_space
         self.ac = MLPActorCritic(observation_space, action_space, args.hidden_layers)
         mpi.sync_params(self.ac)
-        if not args.eval:
-            self.actor_opt = Adam(self.ac.actor.parameters(), lr=args.pi_lr)
-            self.critic_opt = Adam(self.ac.critic.parameters(), lr=args.v_lr)
-            self.epochs = args.epochs
-            self.steps_per_epoch = int(args.steps_per_epoch / mpi.n_procs())
-            self.train_v_iters = args.train_v_iters
-            self.max_ep_len = args.max_ep_len
-            self.buffer = MPIBuffer(self.steps_per_epoch, args.gamma, args.lamb)
-            self.save = args.save
-            self.save_freq = args.save_freq
-            self.render = args.render
-            self.plot = args.plot
-            self.logger = Logger(args.env, 'VPG', args.model_dir, args.video_dir, args.figure_dir)
-            self.logger.log(f'Algorithm: VPG\nEnvironment: {args.env}\nSeed: {args.seed}')
-            self.logger.set_saver(self.ac)
+        self.actor_opt = Adam(self.ac.actor.parameters(), lr=args.pi_lr)
+        self.critic_opt = Adam(self.ac.critic.parameters(), lr=args.v_lr)
+        self.epochs = args.epochs
+        self.steps_per_epoch = int(args.steps_per_epoch / mpi.n_procs())
+        self.train_v_iters = args.train_v_iters
+        self.max_ep_len = args.max_ep_len
+        self.buffer = Buffer(self.steps_per_epoch, args.gamma, args.lamb)
+        self.save = args.save
+        self.save_freq = args.save_freq
+        self.render = args.render
+        self.plot = args.plot
+        self.logger = Logger(args.env, args.model_dir, args.video_dir, args.figure_dir)
+        self.logger.log(f'Algorithm: VPG\nEnvironment: {args.env}\nSeed: {args.seed}')
+        self.logger.set_saver(self.ac)
 
 
     def _seed(self, seed: int):
@@ -98,7 +93,7 @@ class VPG:
 
     def _update_params(self):
         '''
-        Update parameters
+        Update pi's & v's parameters
         '''
         observations, actions, log_probs, advs, rewards_to_go = self.buffer.get()
 
@@ -122,9 +117,7 @@ class VPG:
         '''
         One epoch training
         '''
-        returns = []
-        eps_len = []
-        step = 0
+        returns, eps_len, step = [], [], 0
 
         while step < self.steps_per_epoch:
             observation = self.env.reset()
@@ -172,33 +165,10 @@ class VPG:
             pass
 
 
-    def test(self, vid_path: str=None, model_path: str=None):
-        if mpi.proc_rank() == 0:
-            print('---Evaluating---')
-            if model_path:
-                self.ac.actor.load_state_dict(torch.load(model_path))
-            if vid_path:
-                vr = video_recorder.VideoRecorder(self.env, path=vid_path)
-            obs = self.env.reset()
-            step = total_reward =0
-            while True:
-                self.env.render()
-                if vid_path:
-                    vr.capture_frame()
-                action, _, _ = self.ac.step(obs)
-                obs, reward, terminated, _ = self.env.step(action)
-                step += 1
-                total_reward += reward
-                if terminated:
-                    print(f'Episode finished after {step} steps\nTotal reward {total_reward}')
-                    break
-            self.env.close()
-
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Vanilla Policy Gradient')
     parser.add_argument('--env', type=str, choices=['CartPole-v0', 'HalfCheetah-v2'],
-                        help='OpenAI enviroment name')
+                        help='Environment ID')
     parser.add_argument('--eval', action='store_true',
                         help='Whether to enable evaluation')
     parser.add_argument('--model-path', type=str,
@@ -235,21 +205,15 @@ if __name__ == '__main__':
                         help='Whether to save training result as video')
     parser.add_argument('--plot', action='store_true',
                         help='Whether to plot training statistics and save as image')
-    parser.add_argument('--model-dir', type=str, default='./output/models',
+    parser.add_argument('--model-dir', type=str, default='./zoo/pg/output/models/vpg',
                         help='Where to save the model')
-    parser.add_argument('--video-dir', type=str, default='./output/videos',
+    parser.add_argument('--video-dir', type=str, default='./zoo/pg/output/videos/vpg',
                         help='Where to save the video output')
-    parser.add_argument('--figure-dir', type=str, default='./output/figures',
+    parser.add_argument('--figure-dir', type=str, default='./zoo/pg/output/figures/vpg',
                         help='Where to save the plots')
     args = parser.parse_args()
-
-    if not args.eval and args.model_path or (not args.model_path and args.eval):
-        parser.error('Arguments --eval & --model-path must be specified together.')
     mpi.mpi_fork(args.cpu)
     mpi.setup_pytorch_for_mpi()
 
     agent = VPG(args)
-    if args.eval:
-        agent.test(model_path=args.model_path)
-    else:
-        agent.train()
+    agent.train()

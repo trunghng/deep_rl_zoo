@@ -2,14 +2,11 @@ import torch
 from torch.optim import Adam
 import numpy as np
 import gym
-from gym.wrappers.monitoring import video_recorder
-import argparse
-from os.path import join
-import random
-from utils import Buffer, MPIBuffer
-from network import MLPActorCritic
+import argparse, random
 import common.mpi_utils as mpi
 from common.logger import Logger
+from zoo.pg.utils import Buffer
+from zoo.pg.network import MLPActorCritic
 
 
 class PPO:
@@ -51,28 +48,27 @@ class PPO:
         action_space = self.env.action_space
         self.ac = MLPActorCritic(observation_space, action_space, args.hidden_layers)
         mpi.sync_params(self.ac)
-        if not args.eval:
-            self.actor_opt = Adam(self.ac.actor.parameters(), lr=args.pi_lr)
-            self.critic_opt = Adam(self.ac.critic.parameters(), lr=args.v_lr)
-            self.epochs = args.epochs
-            self.steps_per_epoch = int(args.steps_per_epoch / mpi.n_procs())
-            self.train_pi_iters = args.train_pi_iters
-            self.train_v_iters = args.train_v_iters
-            self.max_ep_len = args.max_ep_len
-            self.buffer = MPIBuffer(self.steps_per_epoch, args.gamma, args.lamb)
-            self.kl_target = args.kl_target
-            if args.clip:
-                self.clip_ratio = args.clip_ratio
-            else:
-                pass
-            self.goal = args.goal
-            self.save = args.save
-            self.save_freq = args.save_freq
-            self.render = args.render
-            self.plot = args.plot
-            self.logger = Logger(args.env, 'PPO', args.model_dir, args.video_dir, args.figure_dir)
-            self.logger.log(f'Algorithm: PPO\nEnvironment: {args.env}\nSeed: {args.seed}')
-            self.logger.set_saver(self.ac)
+        self.actor_opt = Adam(self.ac.actor.parameters(), lr=args.pi_lr)
+        self.critic_opt = Adam(self.ac.critic.parameters(), lr=args.v_lr)
+        self.epochs = args.epochs
+        self.steps_per_epoch = int(args.steps_per_epoch / mpi.n_procs())
+        self.train_pi_iters = args.train_pi_iters
+        self.train_v_iters = args.train_v_iters
+        self.max_ep_len = args.max_ep_len
+        self.buffer = Buffer(self.steps_per_epoch, args.gamma, args.lamb)
+        self.kl_target = args.kl_target
+        if args.clip:
+            self.clip_ratio = args.clip_ratio
+        else:
+            pass
+        self.goal = args.goal
+        self.save = args.save
+        self.save_freq = args.save_freq
+        self.render = args.render
+        self.plot = args.plot
+        self.logger = Logger(args.env, args.model_dir, args.video_dir, args.figure_dir)
+        self.logger.log(f'Algorithm: PPO\nEnvironment: {args.env}\nSeed: {args.seed}')
+        self.logger.set_saver(self.ac)
 
 
     def _seed(self, seed: int):
@@ -135,9 +131,7 @@ class PPO:
         '''
         Perform one training epoch
         '''
-        returns = []
-        eps_len = []
-        step = 0
+        returns, eps_len, step = [], [], 0
 
         while step < self.steps_per_epoch:
             observation = self.env.reset()
@@ -166,7 +160,6 @@ class PPO:
 
 
     def train(self):
-        self.logger.log('---Training---')
         for epoch in range(1, self.epochs + 1):
             self._train_one_epoch()
             self.logger.log_tabular('Epoch', epoch)
@@ -186,37 +179,10 @@ class PPO:
             pass
 
 
-    def test(self, vid_path: str=None, model_path: str=None):
-        if mpi.proc_rank() == 0:
-            print('---Evaluating---')
-            if model_path:
-                self.ac.actor.load_state_dict(torch.load(model_path))
-            if vid_path:
-                vr = video_recorder.VideoRecorder(self.env, path=vid_path)
-            obs = self.env.reset()
-            step = total_reward = 0
-            while True:
-                self.env.render()
-                if vid_path:
-                    vr.capture_frame()
-                action, _, _ = self.ac.step(obs)
-                obs, reward, terminated, _ = self.env.step(action)
-                step += 1
-                total_reward += reward
-                if terminated:
-                    print(f'Episode finished after {step} steps\nTotal reward: {total_reward}')
-                    break
-            self.env.close()
-
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Proximal Policy Optimization')
     parser.add_argument('--env', type=str, choices=['CartPole-v0', 'HalfCheetah-v2'],
-                        help='OpenAI enviroment name')
-    parser.add_argument('--eval', action='store_true',
-                        help='Whether to enable evaluation')
-    parser.add_argument('--model-path', type=str,
-                        help='Model path to load')
+                        help='Environment ID')
     parser.add_argument('--cpu', type=int, default=4,
                         help='Number of CPUs for parallel computing')
     parser.add_argument('--seed', type=int, default=0,
@@ -257,23 +223,17 @@ if __name__ == '__main__':
                         help='Whether to save training result as video')
     parser.add_argument('--plot', action='store_true',
                         help='Whether to plot training statistics and save as image')
-    parser.add_argument('--model-dir', type=str, default='./output/models',
+    parser.add_argument('--model-dir', type=str, default='./zoo/pg/output/models/ppo',
                         help='Where to save the model')
-    parser.add_argument('--video-dir', type=str, default='./output/videos',
+    parser.add_argument('--video-dir', type=str, default='./zoo/pg/output/videos/ppo',
                         help='Where to save the video output')
-    parser.add_argument('--figure-dir', type=str, default='./output/figures',
+    parser.add_argument('--figure-dir', type=str, default='./zoo/pg/output/figures/ppo',
                         help='Where to save the plots')
     args = parser.parse_args()
-    
-    if not args.eval and args.model_path or (not args.model_path and args.eval):
-        parser.error('Arguments --eval & --model-path must be specified at the same time.')
     if args.clip and not args.clip_ratio:
         parser.error('Argument --clip-ratio is required when --clip is enabled.')
     mpi.mpi_fork(args.cpu)
     mpi.setup_pytorch_for_mpi()
 
     agent = PPO(args)
-    if args.eval:
-        agent.test(model_path=args.model_path)
-    else:
-        agent.train()
+    agent.train()
