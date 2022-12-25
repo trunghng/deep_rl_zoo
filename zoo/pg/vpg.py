@@ -5,7 +5,7 @@ import numpy as np
 import argparse, random
 import common.mpi_utils as mpi
 from common.logger import Logger
-from zoo.pg.network import MLPActorCritic
+from zoo.pg.network import MLPStochasticActorCritic
 from zoo.pg.utils import Buffer
 
 
@@ -14,7 +14,7 @@ class VPG:
 
     def __init__(self, args):
         '''
-        Vanilla Policy Gradient with Actor-Critic approach & Generalized Advantage Estimators & 
+        Vanilla Policy Gradient w/ Generalized Advantage Estimators & 
             using rewards-to-go as target for the value function, which is chosen as the baseline
 
         :param env: (str) OpenAI environment name
@@ -38,10 +38,10 @@ class VPG:
         :param figure_dir: (str) Figure directory
         '''
         self.env = gym.make(args.env)
-        self._seed(args.seed)
+        self.seed(args.seed)
         observation_space = self.env.observation_space
         action_space = self.env.action_space
-        self.ac = MLPActorCritic(observation_space, action_space, args.hidden_layers)
+        self.ac = MLPStochasticActorCritic(observation_space, action_space, args.hidden_layers)
         mpi.sync_params(self.ac)
         self.actor_opt = Adam(self.ac.actor.parameters(), lr=args.pi_lr)
         self.critic_opt = Adam(self.ac.critic.parameters(), lr=args.v_lr)
@@ -59,7 +59,7 @@ class VPG:
         self.logger.set_saver(self.ac)
 
 
-    def _seed(self, seed: int):
+    def seed(self, seed: int):
         '''
         Set global seed
         '''
@@ -70,42 +70,31 @@ class VPG:
         self.env.seed(seed)
 
 
-    def _compute_pi_loss(self, observations, actions, advs):
+    def update_params(self):
         '''
-        :param observations:
-        :param actions:
-        :param advs:
+        Update policy and value networks' parameters
         '''
-        _, log_prob = self.ac.actor(observations, actions)
-        loss = -(log_prob * advs).mean()
-        return loss
+        def compute_pi_loss(observations, actions, advs):
+            _, log_prob = self.ac.actor(observations, actions)
+            loss = -(log_prob * advs).mean()
+            return loss
 
+        def compute_v_loss(observations, rewards_to_go):
+            values = self.ac.critic(observations)
+            loss = ((values - rewards_to_go) ** 2).mean()
+            return loss
 
-    def _compute_v_loss(self, observations, rewards_to_go):
-        '''
-        :param observations:
-        :param rewards_to_go:
-        '''
-        values = self.ac.critic(observations)
-        loss = ((values - rewards_to_go) ** 2).mean()
-        return loss
-
-
-    def _update_params(self):
-        '''
-        Update pi's & v's parameters
-        '''
         observations, actions, log_probs, advs, rewards_to_go = self.buffer.get()
 
         self.actor_opt.zero_grad()
-        pi_loss = self._compute_pi_loss(observations, actions, advs)
+        pi_loss = compute_pi_loss(observations, actions, advs)
         pi_loss.backward()
         mpi.mpi_avg_grads(self.ac.actor)
         self.actor_opt.step()
 
         for _ in range(self.train_v_iters):
             self.critic_opt.zero_grad()
-            v_loss = self._compute_v_loss(observations, rewards_to_go)
+            v_loss = compute_v_loss(observations, rewards_to_go)
             v_loss.backward()
             mpi.mpi_avg_grads(self.ac.critic)
             self.critic_opt.step()
@@ -113,11 +102,11 @@ class VPG:
         self.logger.add(PiLoss=pi_loss.item(), VLoss=v_loss.item())
 
 
-    def _train_one_epoch(self):
+    def train_one_epoch(self):
         '''
         One epoch training
         '''
-        returns, eps_len, step = [], [], 0
+        step = 0
 
         while step < self.steps_per_epoch:
             observation = self.env.reset()
@@ -134,21 +123,17 @@ class VPG:
                 if terminated or len(rewards) == self.max_ep_len or step == self.steps_per_epoch:
                     if terminated:
                         value = 0
-                        return_, ep_len = sum(rewards), len(rewards)
-                        returns.append(return_)
-                        eps_len.append(ep_len)
-                        self.logger.add(Return=returns, EpLen=eps_len)
+                        self.logger.add(Return=sum(rewards), EpLen=len(rewards))
                     else:
                         _, _, value = self.ac.step(observation)
                     self.buffer.finish_rollout(value)
                     break
-        self._update_params()
+        self.update_params()
 
 
     def train(self):
-        self.logger.log('---Training---')
         for epoch in range(1, self.epochs + 1):
-            self._train_one_epoch()
+            self.train_one_epoch()
             self.logger.log_tabular('Epoch', epoch)
             self.logger.log_tabular('PiLoss')
             self.logger.log_tabular('VLoss')

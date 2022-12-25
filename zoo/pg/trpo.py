@@ -8,8 +8,8 @@ import argparse, random, os
 from copy import deepcopy
 import common.mpi_utils as mpi
 from common.logger import Logger
-from zoo.pg.network import MLPActorCritic
-from zoo.pg.utils import *
+from zoo.pg.network import MLPStochasticActorCritic
+from zoo.pg.utils import flatten, conjugate_gradient, Buffer
 
 
 class TRPO:
@@ -17,8 +17,7 @@ class TRPO:
 
     def __init__(self, args):
         '''
-        TRPO & Natural Policy Gradient w/ Actor-Critic approach & 
-            Generalized Advantage Estimators & 
+        TRPO & Natural Policy Gradient w/ Generalized Advantage Estimators & 
             using rewards-to-go as target for the value function
 
         :param env: (str) OpenAI environment name
@@ -30,7 +29,7 @@ class TRPO:
         :param train_v_iters: (int) Number of GD-steps to take on value function per epoch
         :param max_ep_len: (int) Maximum episode/trajectory length
         :param gamma: (float) Discount factor
-        :param lamb: (float) Lambda for GAE
+        :param lamb: (float) Lambda for GAE-lambda
         :param goal: (float) Total reward threshold for early stopping
         :param delta: (float) KL divergence threshold
         :param damping_coeff: (float) Damping coefficient
@@ -39,6 +38,7 @@ class TRPO:
         :param backtrack_iters: (int) Maximum number of steps of line search
         :param backtrack_coeff: (float) How far back to step during backtracking line search
         :param save: (bool) Whether to save the final model
+        :param save_freq: (int) Model saving frequency
         :param render: (bool) Whether to render the training result in video
         :param plot: (bool) Whether to plot the statistics and save as image
         :param model_dir: (str) Model directory
@@ -46,10 +46,10 @@ class TRPO:
         :param figure_dir: (str) Figure directory
         '''
         self.env = gym.make(args.env)
-        self._seed(args.seed)
+        self.seed(args.seed)
         observation_space = self.env.observation_space
         action_space = self.env.action_space
-        self.ac = MLPActorCritic(observation_space, action_space, args.hidden_layers)
+        self.ac = MLPStochasticActorCritic(observation_space, action_space, args.hidden_layers)
         mpi.sync_params(self.ac)
         self.critic_opt = Adam(self.ac.critic.parameters(), lr=args.v_lr)
         self.epochs = args.epochs
@@ -57,7 +57,6 @@ class TRPO:
         self.train_v_iters = args.train_v_iters
         self.max_ep_len = args.max_ep_len
         self.buffer = Buffer(self.steps_per_epoch, args.gamma, args.lamb)
-        self.goal = args.goal
         self.delta = args.delta
         self.damping_coeff = args.damping_coeff
         self.cg_iters = args.cg_iters
@@ -79,7 +78,7 @@ class TRPO:
         self.logger.set_saver(self.ac)
 
 
-    def _seed(self, seed: int):
+    def seed(self, seed: int):
         '''
         Set global seed
         '''
@@ -90,9 +89,9 @@ class TRPO:
         self.env.seed(seed)
 
 
-    def _update_params(self):
+    def update_params(self):
         '''
-        Update pi's & v's parameters
+        Update policy and value network's parameters
         '''
         observations, actions, logps_old, advs, rewards_to_go = self.buffer.get()
         with torch.no_grad():
@@ -124,9 +123,6 @@ class TRPO:
             return loss_kl['loss'], loss_kl['kl']
 
         def compute_v_loss():
-            '''
-            Compute value function loss
-            '''
             values = self.ac.critic(observations)
             loss = ((values - rewards_to_go) ** 2).mean()
             return loss
@@ -205,12 +201,11 @@ class TRPO:
         self.logger.add(PiLoss=pi_loss.item(), VLoss=v_loss.item(), KL=kl)
 
 
-    def _train_one_epoch(self):
+    def train_one_epoch(self):
         '''
         Perform one training epoch
         '''
-        returns, eps_len, step = [], [], 0
-
+        step = 0
         while step < self.steps_per_epoch:
             observation = self.env.reset()
             rewards = []
@@ -226,21 +221,17 @@ class TRPO:
                 if terminated or len(rewards) == self.max_ep_len or step == self.steps_per_epoch:
                     if terminated:
                         value = 0
-                        return_, ep_len = sum(rewards), len(rewards)
-                        returns.append(return_)
-                        eps_len.append(ep_len)
-                        self.logger.add(Return=returns, EpLen=eps_len)
+                        self.logger.add(Return=sum(rewards), EpLen=len(rewards))
                     else:
                         _, _, value = self.ac.step(observation)
                     self.buffer.finish_rollout(value)
                     break
-        self._update_params()
+        self.update_params()
 
 
     def train(self):
-        self.logger.log('---Training---')
         for epoch in range(1, self.epochs + 1):
-            self._train_one_epoch()
+            self.train_one_epoch()
             self.logger.log_tabular('Epoch', epoch)
             self.logger.log_tabular('PiLoss')
             self.logger.log_tabular('VLoss')

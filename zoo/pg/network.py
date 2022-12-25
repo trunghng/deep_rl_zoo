@@ -1,9 +1,9 @@
 from typing import List
 from abc import ABC, abstractmethod
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.distributions import Categorical, Normal
-import numpy as np
 from gym.spaces import Box, Discrete
 
 
@@ -22,7 +22,7 @@ def mlp(sizes: List[int],
     return nn.Sequential(*layers)
 
 
-class Actor(nn.Module, ABC):
+class StochasticActor(nn.Module, ABC):
 
 
     @abstractmethod
@@ -60,22 +60,22 @@ class Actor(nn.Module, ABC):
         return action, log_prob
 
 
-class MLPCategoricalActor(Actor):
+class MLPCategoricalActor(StochasticActor):
 
 
     def __init__(self, 
                 obs_dim: int,
-                act_dim: int,
+                action_dim: int,
                 hidden_sizes: List[int],
                 activation):
         '''
         :param obs_dim: observation dimensionality
-        :param act_dim: action dimensionality
+        :param action_dim: action dimensionality
         :param hidden_sizes: list of hidden layers' size
         :param activation: activation function
         '''
         super().__init__()
-        self.logits_network = mlp([obs_dim, *hidden_sizes, act_dim], activation)
+        self.logits_network = mlp([obs_dim, *hidden_sizes, action_dim], activation)
 
 
     def _distribution(self, observation):
@@ -86,23 +86,23 @@ class MLPCategoricalActor(Actor):
         return pi.log_prob(action)
 
 
-class MLPGaussianActor(Actor):
+class MLPGaussianActor(StochasticActor):
 
 
     def __init__(self, 
                 obs_dim: int,
-                act_dim: int,
+                action_dim: int,
                 hidden_sizes: List[int],
                 activation):
         '''
         :param obs_dim: observation dimensionality
-        :param act_dim: action dimensionality
+        :param action_dim: action dimensionality
         :param hidden_sizes: list of hidden layers' size
         :param activation: activation function
         '''
         super().__init__()
-        self.mean = mlp([obs_dim, *hidden_sizes, act_dim], activation)
-        self.log_std = nn.Parameter(torch.as_tensor(-0.5 * np.ones(act_dim), dtype=torch.float32))
+        self.mean = mlp([obs_dim, *hidden_sizes, action_dim], activation)
+        self.log_std = nn.Parameter(torch.as_tensor(-0.5 * np.ones(action_dim), dtype=torch.float32))
 
 
     def _distribution(self, observation):
@@ -115,7 +115,25 @@ class MLPGaussianActor(Actor):
         return pi.log_prob(action).sum(axis=-1)
 
 
-class MLPCritic(nn.Module):
+class MLPDeterministicActor(nn.Module):
+
+
+    def __init__(self,
+                obs_dim: int,
+                action_dim: int,
+                hidden_sizes: List[int],
+                activation,
+                action_limit):
+        super().__init__()
+        self.pi_network = mlp([obs_dim, *hidden_sizes, action_dim], activation, nn.Tanh)
+        self.action_limit = action_limit
+
+
+    def forward(self, observation):
+        return self.action_limit * self.pi_network(observation)
+
+
+class MLPVCritic(nn.Module):
 
 
     def __init__(self,
@@ -123,6 +141,7 @@ class MLPCritic(nn.Module):
                 hidden_sizes,
                 activation):
         '''
+        Critic for optimizing state value function
         :param obs_dim: observation dimensionality
         :param hidden_sizes: list of hidden layers' size
         :param activation: activation function
@@ -144,7 +163,34 @@ class MLPCritic(nn.Module):
         return value
 
 
-class MLPActorCritic(nn.Module):
+class MLPQCritic(nn.Module):
+
+
+    def __init__(self,
+                obs_dim,
+                action_dim,
+                hidden_sizes,
+                activation):
+        '''
+        Critic for optimizing state-action value function
+        :param obs_dim: observation dimensionality
+        :param hidden_sizes: list of hidden layers' size
+        :param activation: activation function
+        '''
+        super().__init__()
+        self.value_network = mlp([obs_dim + action_dim, *hidden_sizes, 1], activation)
+
+
+    def forward(self, observation, action):
+        '''
+        :param observation: observation
+        :param action: action
+        '''
+        obs_action = torch.cat([observation, action], dim=-1)
+        return torch.squeeze(self.value_network(obs_action), -1)
+
+
+class MLPStochasticActorCritic(nn.Module):
 
 
     def __init__(self, 
@@ -165,8 +211,7 @@ class MLPActorCritic(nn.Module):
             self.actor = MLPGaussianActor(obs_dim, action_space.shape[0], hidden_sizes, activation)
         elif isinstance(action_space, Discrete):
             self.actor = MLPCategoricalActor(obs_dim, action_space.n, hidden_sizes, activation)
-
-        self.critic = MLPCritic(obs_dim, hidden_sizes, activation)
+        self.critic = MLPVCritic(hidden_sizes, activation, obs_dim)
 
 
     def step(self, observation):
@@ -178,3 +223,35 @@ class MLPActorCritic(nn.Module):
 
     def act(self, observation):
         return self.step(observation)[0]
+
+
+class MLPDeterministicActorCritic(nn.Module):
+
+
+    def __init__(self,
+                observation_space,
+                action_space,
+                hidden_sizes=[256, 256],
+                activation=nn.ReLU):
+        '''
+        :param observation_space: observation space
+        :param action_space: action space
+        :param hidden_sizes: list of hidden layers' size
+        :param activation: activation function
+        '''
+        super().__init__()
+        obs_dim = observation_space.shape[0]
+        self.action_dim = action_space.shape[0]
+        self.action_high = action_space.high[0]
+        self.action_low = action_space.low[0]
+
+        self.actor = MLPDeterministicActor(obs_dim, self.action_dim, hidden_sizes, activation, self.action_high)
+        self.critic = MLPQCritic(obs_dim, self.action_dim, hidden_sizes, activation)
+
+
+    def act(self, observation, noise_sigma):
+        observation = torch.as_tensor(observation, dtype=torch.float32)
+        with torch.no_grad():
+            epsilon = noise_sigma * np.random.randn(self.action_dim)
+            action = self.actor(observation) + epsilon
+        return np.clip(action, self.action_low, self.action_high)
