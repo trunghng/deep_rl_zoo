@@ -55,9 +55,10 @@ if __name__ == '__main__':
                         help='Number of episodes')
     parser.add_argument('-l', '--max-ep-len', type=int, default=1000,
                         help='Maximum length of an episode')
-    parser.add_argument('-r' '--render', action='store_true',
+    parser.add_argument('-r', '--render', action='store_true',
                         help='Whether to render the experiment')
     args = parser.parse_args()
+    print(args)
 
     policy, get_action = load_policy(args.path)
     run_policy(get_action, args)

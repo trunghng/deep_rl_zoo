@@ -4,25 +4,24 @@ import torch
 import numpy as np
 from torch.optim import Adam
 from torch.autograd import grad
-import argparse, random, os
+import argparse, random, os, itertools
 from copy import deepcopy
 from common.logger import Logger
-from zoo.pg.network import MLPDeterministicActorCritic
+from zoo.pg.network import MLPStochasticActorDoubleCritic
 from zoo.pg.utils import ReplayBuffer, polyak_update
 
 
-class DDPG:
+class SAC:
 
 
     def __init__(self, args):
         '''
-        Deep Determinisitic Policy Gradient
+        Soft Actor-Critic
 
         :param env: (str) OpenAI environment name
         :param seed: (int) Seed for RNG
         :param hidden_layers: (List[int]) Hidden layers size of policy & Q networks
-        :param pi_lr: (float) Learning rate for policy optimizer
-        :param q_lr: (float) Learning rate for value function optimizer
+        :param lr: (float) Learning rate for policy, Q networks & entropy coefficient optimizers
         :param epochs: (int) Number of epochs
         :param steps_per_epoch: (int) Maximum number of steps per epoch
         :param max_ep_len: (int) Maximum length of an episode
@@ -34,8 +33,11 @@ class DDPG:
                     This guarantees there are enough number of training experience in the replay buffer
         :param gamma: (float) Discount factor
         :param tau: (float) Polyak averaging update coefficient
-        :param sigma: (float) Standard deviation of mean-zero Gaussian noise for exploration.
-                    The original DDPG used Ornstein-Uhlenbeck process instead.
+        :param ent_coeff: (float) Entropy regularization coefficient
+        :param ent_coeff_init: (float) Initial value for automating entropy adjustment scheme
+        :param ent_target: (float) Desired entropy, used for automating entropy adjustment
+        :param adjust_ent_coeff: (bool) Whether to use automating entropy adjustment scheme, 
+                    use fixed `ent_coeff` otherwise
         :param goal: (float) Total reward threshold for early stopping
         :param save: (bool) Whether to save the final model
         :param save_freq: (int) Model saving frequency
@@ -45,18 +47,18 @@ class DDPG:
         :param video_dir: (str) Video directory
         :param figure_dir: (str) Figure directory
         '''
-        algo = 'DDPG'
+        algo = 'SAC'
         self.env = gym.make(args.env)
         self.seed(args.seed)
         observation_space = self.env.observation_space
         action_space = self.env.action_space
         assert isinstance(action_space, Box), f'{algo} does not work with discrete action space env!'
-        self.ac = MLPDeterministicActorCritic(observation_space, action_space, args.hidden_layers)
+        self.ac = MLPStochasticActorDoubleCritic(observation_space, action_space, args.hidden_layers)
         self.ac_target = deepcopy(self.ac)
         for p in self.ac_target.parameters():
             p.requires_grad = False
-        self.actor_opt = Adam(self.ac.actor.parameters(), lr=args.pi_lr)
-        self.critic_opt = Adam(self.ac.critic.parameters(), lr=args.q_lr)
+        self.pi_opt = Adam(self.ac.pi.parameters(), lr=args.lr)
+        self.q_opt = Adam(itertools.chain(self.ac.q1.parameters(), self.ac.q2.parameters()), lr=args.lr)
         self.epochs = args.epochs
         self.steps_per_epoch = args.steps_per_epoch
         self.max_ep_len = args.max_ep_len
@@ -67,7 +69,16 @@ class DDPG:
         self.update_after = args.update_after
         self.gamma = args.gamma
         self.tau = args.tau
-        self.sigma = args.sigma
+        if args.adjust_ent_coeff:
+            # Set entropy_target = -dim(A) if not specified
+            self.ent_target = -action_space.shape[0] if args.ent_target == 'auto' else float(args.ent_target)
+
+            # Optimize log(alpha) instead according to stable-baseline3
+            assert args.ent_coeff_init > 0, 'Initial value for entropy temperature must be greater than 0!'
+            self.log_ent_coeff = torch.log(torch.tensor(args.ent_coeff_init)).requires_grad_(True)
+            self.ent_coeff_opt = Adam([self.log_ent_coeff], lr=args.lr)
+        else:
+            self.ent_coeff = args.ent_coeff
         self.goal = args.goal
         self.save = args.save
         self.save_freq = args.save_freq
@@ -90,38 +101,71 @@ class DDPG:
 
     def update_params(self):
         '''
-        Update policy and value networks' parameters
+        Update policy & Q networks parameters
         '''
         def compute_targets(rewards, next_observations, terminated):
-            next_actions = self.ac_target.actor(next_observations)
-            return rewards + self.gamma * (1 - terminated) * self.ac_target.critic(next_observations, next_actions)
+            '''
+            Compute TD targets for Q functions
+            '''
+            with torch.no_grad():
+                next_actions, logp_next_actions = self.ac.pi(next_observations)
+                q1_target = self.ac_target.q1(next_observations, next_actions)
+                q2_target = self.ac_target.q2(next_observations, next_actions)
+                q_target = torch.min(q1_target, q2_target)
+                targets = rewards + self.gamma * (1 - terminated) * (q_target - self.ent_coeff * logp_next_actions)
+            return targets
+
+        def compute_q_values(observations, actions):
+            q1_values = self.ac.q1(observations, actions)
+            q2_values = self.ac.q2(observations, actions)
+            return q1_values, q2_values
 
         def compute_q_loss(observations, actions, targets):
-            q_values = self.ac.critic(observations, actions)
-            loss = ((q_values - targets) ** 2).mean()
-            return loss, q_values
+            q1_values, q2_values = compute_q_values(observations, actions)
+            q1_loss = ((targets - q1_values) ** 2).mean()
+            q2_loss = ((targets - q2_values) ** 2).mean()
+            q_loss = q1_loss + q2_loss
+            return q_loss, q1_values, q2_values
 
-        def compute_pi_loss(observations):
-            loss = -self.ac.critic(observations, self.ac.actor(observations)).mean()
-            return loss
+        def compute_pi_loss(observations, actions, logp_actions):
+            q1_values, q2_values = compute_q_values(observations, actions)
+            q_values = torch.min(q1_values, q2_values)
+            pi_loss = (self.ent_coeff * logp_actions - q_values).mean()
+            return pi_loss
 
         observations, actions, rewards, next_observations, terminated = self.buffer.sample(self.batch_size)
+
+        # Sample actions with current pi
+        actions_, logp_actions = self.ac.pi(observations)
+
+        # Whether to enable entropy temperature adjustment
+        if self.ent_target is not None:
+            self.ent_coeff = torch.exp(self.log_ent_coeff.detach())
+            self.ent_coeff_opt.zero_grad()
+            ent_coeff_loss = -(self.log_ent_coeff * (logp_actions + self.ent_target).detach()).mean()
+            ent_coeff_loss.backward()
+            self.ent_coeff_opt.step()
+            self.logger.add(EntCoeffLoss=ent_coeff_loss.item())
+
+        self.q_opt.zero_grad()
         targets = compute_targets(rewards, next_observations, terminated)
-
-        self.critic_opt.zero_grad()
-        q_loss, q_values = compute_q_loss(observations, actions, targets)
+        q_loss, q1_values, q2_values = compute_q_loss(observations, actions, targets)
         q_loss.backward()
-        self.critic_opt.step()
-        
-        self.actor_opt.zero_grad()
-        pi_loss = compute_pi_loss(observations)
+        self.q_opt.step()
+
+        self.pi_opt.zero_grad()
+        pi_loss = compute_pi_loss(observations, actions_, logp_actions)
         pi_loss.backward()
-        self.actor_opt.step()
+        self.pi_opt.step()
 
-        # Update target networks parameters according to Polyak averaging
+        # Update target networks parameters according to Polyak average
         polyak_update(self.ac.parameters(), self.ac_target.parameters(), self.tau)
-        self.logger.add(PiLoss=pi_loss.item(), QLoss=q_loss.item(), QValues=q_values.detach().numpy())
-
+        self.logger.add(PiLoss=pi_loss.item(),
+                        QLoss=q_loss.item(),
+                        Q1Values=q1_values.detach().numpy(),
+                        Q2Values=q2_values.detach().numpy(),
+                        LogPi=logp_actions.detach().numpy(),
+                        EntCoeff=self.ent_coeff.item())
 
     def train(self):
         step = 0
@@ -136,7 +180,7 @@ class DDPG:
                         # SpinniningUP's trick to ultilize exploration at the beginning
                         action = self.env.action_space.sample()
                     else:
-                        action = self.ac.step(observation, self.sigma)
+                        action = self.ac.act(observation)
                     next_observation, reward, terminated, _ = self.env.step(action)
                     rewards.append(reward)
                     step += 1
@@ -159,9 +203,14 @@ class DDPG:
             self.logger.log_tabular('Epoch', epoch)
             self.logger.log_tabular('PiLoss')
             self.logger.log_tabular('QLoss')
-            self.logger.log_tabular('QValues')
+            self.logger.log_tabular('Q1Values')
+            self.logger.log_tabular('Q2Values')
             self.logger.log_tabular('Return')
             self.logger.log_tabular('EpLen')
+            self.logger.log_tabular('EntCoeff')
+            if self.ent_target is not None:
+                self.logger.log_tabular('EntCoeffLoss')
+
             self.logger.log()
 
             if self.save and epoch % self.save_freq == 0:
@@ -174,17 +223,15 @@ class DDPG:
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Deep Deterministic Policy Gradient')
+    parser = argparse.ArgumentParser(description='Soft Actor-Critic')
     parser.add_argument('--env', type=str, default='HalfCheetah-v2',
                         help='Environment ID')
     parser.add_argument('--seed', type=int, default=0,
                         help='Seed for RNG')
     parser.add_argument('--hidden-layers', nargs='+', type=int,
                         help='Hidden layers size of policy & value function networks')
-    parser.add_argument('--pi-lr', type=float, default=1e-3,
-                        help='Learning rate for policy optimizer')
-    parser.add_argument('--q-lr', type=float, default=1e-3,
-                        help='Learning rate for value function optimizer')
+    parser.add_argument('--lr', type=float, default=1e-3,
+                        help='Learning rate for policy, Q networks & entropy coefficient optimizers')
     parser.add_argument('--epochs', type=int, default=50,
                         help='Number of epochs')
     parser.add_argument('--steps-per-epoch', type=int, default=4000,
@@ -205,8 +252,14 @@ if __name__ == '__main__':
                         help='Discount factor')
     parser.add_argument('--tau', type=float, default=0.005,
                         help='Polyak averaging update coefficient')
-    parser.add_argument('--sigma', type=float, default=0.1,
-                        help='Standard deviation of mean-zero Gaussian noise for exploration')
+    parser.add_argument('--ent-coeff', type=float, default=0.2,
+                        help='Entropy regularization coefficient')
+    parser.add_argument('--adjust-ent-coeff', action='store_true',
+                        help='Whether to enable automating entropy adjustment scheme')
+    parser.add_argument('--ent-coeff-init', type=float, default=1.0, 
+                        help='Initial value for automating entropy adjustment scheme')
+    parser.add_argument('--ent-target', type=str, default='auto',
+                        help='Desired entropy, used for automating entropy adjustment')
     parser.add_argument('--goal', type=int,
                         help='Total reward threshold for early stopping')
     parser.add_argument('--save', action='store_true',
@@ -217,13 +270,13 @@ if __name__ == '__main__':
                         help='Whether to save training result as video')
     parser.add_argument('--plot', action='store_true',
                         help='Whether to plot training statistics and save as image')
-    parser.add_argument('--model-dir', type=str, default='./zoo/pg/output/models/ddpg',
+    parser.add_argument('--model-dir', type=str, default='./zoo/pg/output/models/sac',
                         help='Where to save the model')
-    parser.add_argument('--video-dir', type=str, default='./zoo/pg/output/videos/ddpg',
+    parser.add_argument('--video-dir', type=str, default='./zoo/pg/output/videos/sac',
                         help='Where to save the video output')
-    parser.add_argument('--figure-dir', type=str, default='./zoo/pg/output/figures/ddpg',
+    parser.add_argument('--figure-dir', type=str, default='./zoo/pg/output/figures/sac',
                         help='Where to save the plots')
     args = parser.parse_args()
 
-    agent = DDPG(args)
+    agent = SAC(args)
     agent.train()

@@ -3,7 +3,7 @@ import operator
 
 class SegmentTree(object):
     '''
-    Segment tree data structure according to
+    Segment tree data structure implementation according to
     https://cp-algorithms.com/data_structures/segment_tree.html
     '''
 

@@ -31,6 +31,20 @@ def conjugate_gradient(Ax, b, cg_iters: int):
     return x
 
 
+def polyak_update(params, target_params, tau):
+    '''
+    Perform Polyak average update on `target_params` using `params`:
+        p_target = (1 - tau) * p_target + tau * p
+
+    :param params: parameters used for updating `target_params`
+    :param target_params: parameters to update
+    :param tau: (float) soft update coefficient (in [0, 1])
+    '''
+    with torch.no_grad():
+        for p, p_target in zip(params, target_params):
+            p_target.data.copy_((1 - tau) * p_target.data + tau * p.data)
+
+
 class Buffer:
 
 

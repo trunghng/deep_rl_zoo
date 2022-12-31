@@ -66,7 +66,7 @@ class Logger:
                 time.sleep(1e-3)
 
                 vr.capture_frame()
-                action, _, _ = self.model.step(obs)
+                action = self.model.act(obs)
                 obs, reward, terminated, _ = env.step(action)
                 if terminated:
                     break
