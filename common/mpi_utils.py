@@ -65,7 +65,7 @@ def mpi_op(x, op):
 
 def broadcast(x, root=0):
     '''
-    Broadcast :param x: from process :param root: to all other MPI processes
+    Broadcast `x` from process `root` to all other MPI processes
     '''
     comm.Bcast(x, root=root)
 
@@ -84,14 +84,28 @@ def mpi_avg(x):
     return mpi_sum(x) / n_procs()
 
 
+def mpi_max(x):
+    '''
+    Get the maximal value over MPI processes
+    '''
+    return mpi_op(x, MPI.MAX)
+
+
+def mpi_min(x):
+    '''
+    Get the minimal value over MPI processes
+    '''
+    return mpi_op(x, MPI.MIN)
+
+
 def mpi_mean(x):
     mean = mpi_sum(np.sum(x)) / mpi_sum(x.size)
     return mean
 
 
-def mpi_mean_std(x):
+def mpi_get_statistics(x, need_optima=False):
     '''
-    Get mean, standard deviation over data :param x: collected over MPI processes
+    Get mean, standard deviation, max, min over `x` collected over MPI processes
     '''
     x = np.array(x, dtype=np.float32)
     global_sum, global_n = mpi_sum([np.sum(x), x.size])
@@ -99,6 +113,11 @@ def mpi_mean_std(x):
 
     global_sum_sq = mpi_sum(np.sum((x - mean)**2))
     std = np.sqrt(global_sum_sq / global_n)
+
+    if need_optima:
+        max_ = mpi_max(np.max(x) if x.size > 0 else -np.inf)
+        min_ = mpi_min(np.min(x) if x.size > 0 else np.inf)
+        return mean, std, max_, min_
     return mean, std
 
 
@@ -125,7 +144,7 @@ def mpi_avg_grads(module):
         p_grad_numpy[:] = avg_p_grad[:]
 
 
-def print_one(msg, rank=0):
+def mpi_print(msg, rank=0):
     '''
     :param msg: (str) Messege to print
     :param rank: (int) Rank of the process that is proceeded to print the messege

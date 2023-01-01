@@ -1,7 +1,7 @@
 import gym
 import torch
 import time, argparse
-from common.mpi_utils import mpi_mean_std
+from common.mpi_utils import mpi_get_statistics
 
 
 def load_policy(path):
@@ -9,7 +9,6 @@ def load_policy(path):
 
     def get_action(obs):
         return policy.act(obs)
-
     return policy, get_action
 
 
@@ -39,8 +38,8 @@ def run_policy(get_action, args):
                 eps_len.append(ep_len)
                 print('Ep: %d\tReturn: %.4f\tEpLen: %.4f' % (ep, return_, ep_len))
                 break
-    avg_return, std_return = mpi_mean_std(returns)
-    avg_eplen, std_eplen = mpi_mean_std(eps_len)
+    avg_return, std_return = mpi_get_statistics(returns)
+    avg_eplen, std_eplen = mpi_get_statistics(eps_len)
     print('AvgReturn: %.4f\tStdReturn: %.4f\nAvgEpLen: %.4f\tStdEpLen: %.4f'%
         (avg_return, std_return, avg_eplen, std_eplen))
 
@@ -58,7 +57,6 @@ if __name__ == '__main__':
     parser.add_argument('-r', '--render', action='store_true',
                         help='Whether to render the experiment')
     args = parser.parse_args()
-    print(args)
 
     policy, get_action = load_policy(args.path)
     run_policy(get_action, args)

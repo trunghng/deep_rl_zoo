@@ -2,7 +2,7 @@ from collections import deque
 import random
 import numpy as np
 import torch
-from common.mpi_utils import mpi_mean_std
+from common.mpi_utils import mpi_get_statistics
 
 
 def flatten(tensor):
@@ -123,7 +123,7 @@ class Buffer:
         observations = np.array(observations)
         actions = np.array(actions)
         advs = np.array(advs)
-        mean, std = mpi_mean_std(advs)
+        mean, std = mpi_get_statistics(advs)
         advs = (advs - mean) / std
         rewards_to_go = np.array(rewards_to_go)
 

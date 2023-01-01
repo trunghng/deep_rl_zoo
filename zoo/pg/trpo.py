@@ -20,7 +20,8 @@ class TRPO:
         TRPO & Natural Policy Gradient w/ Generalized Advantage Estimators & 
             using rewards-to-go as target for the value function
 
-        :param env: (str) OpenAI environment name
+        :param env: (str) Environment ID
+        :param exp_name: (str) Experiment name
         :param seed: (int) Seed for RNG
         :param hidden_layers: (List[int]) Hidden layers size of policy & value function networks
         :param v_lr: (float) Learning rate for value function optimizer
@@ -41,9 +42,6 @@ class TRPO:
         :param save_freq: (int) Model saving frequency
         :param render: (bool) Whether to render the training result in video
         :param plot: (bool) Whether to plot the statistics and save as image
-        :param model_dir: (str) Model directory
-        :param video_dir: (str) Video directory
-        :param figure_dir: (str) Figure directory
         '''
         self.env = gym.make(args.env)
         self.seed(args.seed)
@@ -53,10 +51,11 @@ class TRPO:
         mpi.sync_params(self.ac)
         self.critic_opt = Adam(self.ac.critic.parameters(), lr=args.v_lr)
         self.epochs = args.epochs
-        self.steps_per_epoch = int(args.steps_per_epoch / mpi.n_procs())
+        self.proc_steps_per_epoch = int(args.steps_per_epoch / mpi.n_procs())
+        self.steps_per_epoch = args.steps_per_epoch
         self.train_v_iters = args.train_v_iters
         self.max_ep_len = args.max_ep_len
-        self.buffer = Buffer(self.steps_per_epoch, args.gamma, args.lamb)
+        self.buffer = Buffer(self.proc_steps_per_epoch, args.gamma, args.lamb)
         self.delta = args.delta
         self.damping_coeff = args.damping_coeff
         self.cg_iters = args.cg_iters
@@ -64,17 +63,25 @@ class TRPO:
             self.linesearch = True
             self.backtrack_iters = args.backtrack_iters
             self.backtrack_coeff = args.backtrack_coeff
-            algo = 'TRPO'
+            algo = 'trpo'
         else:
             self.linesearch = False
-            algo = 'NPG'
+            algo = 'npg'
         self.goal = args.goal
         self.save = args.save
         self.save_freq = args.save_freq
         self.render = args.render
         self.plot = args.plot
-        self.logger = Logger(args.env, args.model_dir, args.video_dir, args.figure_dir)
-        self.logger.log(f'Algorithm: {algo}\nEnvironment: {args.env}\nSeed: {args.seed}')
+        if args.exp_name:
+            exp_name = args.exp_name
+            log_dir = os.path.join(os.getcwd(), 'data', exp_name, f'{exp_name}_s{args.seed}')
+        else:
+            exp_name = None
+            log_dir = None
+        self.logger = Logger(log_dir=log_dir, exp_name=exp_name)
+        config_dict = vars(args)
+        config_dict['algo'] = algo
+        self.logger.save_config(config_dict)
         self.logger.set_saver(self.ac)
 
 
@@ -198,7 +205,11 @@ class TRPO:
             mpi.mpi_avg_grads(self.ac.critic)
             self.critic_opt.step()
 
-        self.logger.add(PiLoss=pi_loss.item(), VLoss=v_loss.item(), KL=kl)
+        self.logger.add({
+            'pi-loss': pi_loss.item(),
+            'v-loss': v_loss.item(),
+            'kl': kl
+        })
 
 
     def train_one_epoch(self):
@@ -206,7 +217,7 @@ class TRPO:
         Perform one training epoch
         '''
         step = 0
-        while step < self.steps_per_epoch:
+        while step < self.proc_steps_per_epoch:
             observation = self.env.reset()
             rewards = []
 
@@ -218,10 +229,14 @@ class TRPO:
                 rewards.append(reward)
                 step += 1
 
-                if terminated or len(rewards) == self.max_ep_len or step == self.steps_per_epoch:
+                if terminated or len(rewards) == self.max_ep_len\
+                        or step == self.proc_steps_per_epoch:
                     if terminated:
                         value = 0
-                        self.logger.add(Return=sum(rewards), EpLen=len(rewards))
+                        self.logger.add({
+                            'episode-return': sum(rewards),
+                            'episode-length': len(rewards)
+                        })
                     else:
                         _, _, value = self.ac.step(observation)
                     self.buffer.finish_rollout(value)
@@ -232,13 +247,14 @@ class TRPO:
     def train(self):
         for epoch in range(1, self.epochs + 1):
             self.train_one_epoch()
-            self.logger.log_tabular('Epoch', epoch)
-            self.logger.log_tabular('PiLoss')
-            self.logger.log_tabular('VLoss')
-            self.logger.log_tabular('KL')
-            self.logger.log_tabular('Return')
-            self.logger.log_tabular('EpLen')
-            self.logger.log()
+            self.logger.log_epoch('epoch', epoch)
+            self.logger.log_epoch('pi-loss', average_only=True)
+            self.logger.log_epoch('v-loss', average_only=True)
+            self.logger.log_epoch('kl', average_only=True)
+            self.logger.log_epoch('episode-return', need_optima=True)
+            self.logger.log_epoch('episode-length', average_only=True)
+            self.logger.log_epoch('total-env-interacts', epoch * self.steps_per_epoch)
+            self.logger.dump_epoch()
 
             if self.save and epoch % self.save_freq == 0:
                 self.logger.save_state()
@@ -252,12 +268,14 @@ class TRPO:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Trust Region Policy Optimization')
     parser.add_argument('--env', type=str, choices=['CartPole-v0', 'HalfCheetah-v2'],
-                        help='Environment ID')
+                        default='HalfCheetah-v2', help='Environment ID')
+    parser.add_argument('--exp-name', type=str, default='trpo',
+                        help='Experiment name')
     parser.add_argument('--cpu', type=int, default=4,
                         help='Number of CPUs for parallel computing')
     parser.add_argument('--seed', type=int, default=0,
                         help='Seed for RNG')
-    parser.add_argument('--hidden-layers', nargs='+', type=int,
+    parser.add_argument('--hidden-layers', nargs='+', type=int, default=[64, 32],
                         help='Hidden layers size of policy & value function networks')
     parser.add_argument('--v-lr', type=float, default=1e-3,
                         help='Learning rate for value function optimizer')
@@ -295,12 +313,6 @@ if __name__ == '__main__':
                         help='Whether to save training result as video')
     parser.add_argument('--plot', action='store_true',
                         help='Whether to plot training statistics and save as image')
-    parser.add_argument('--model-dir', type=str, default='./zoo/pg/output/models/trpo',
-                        help='Where to save the model')
-    parser.add_argument('--video-dir', type=str, default='./zoo/pg/output/videos/trpo',
-                        help='Where to save the video output')
-    parser.add_argument('--figure-dir', type=str, default='./zoo/pg/output/figures/trpo',
-                        help='Where to save the plots')
     args = parser.parse_args()
 
     if args.linesearch and not (args.backtrack_coeff and args.backtrack_iters):

@@ -1,0 +1,2 @@
+epoch	pi-loss	q-loss	average-q1-values	std-q1-values	max-q1-values	min-q1-values	average-q2-values	std-q2-values	max-q2-values	min-q2-values	average-episode-return	std-episode-return	max-episode-return	min-episode-return	episode-length	entropy-coeff	total-env-interacts	entropy-coeff-loss
+1	-12.249685	1.6873729	10.701037	4.1978006	29.463331	-1.4011528	10.700184	4.199673	29.771439	-1.0645678	-240.45226	114.58301	-90.49856	-379.99118	1000.0	0.31951985	4000	-9.762108

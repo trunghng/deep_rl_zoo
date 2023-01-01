@@ -18,7 +18,8 @@ class SAC:
         '''
         Soft Actor-Critic
 
-        :param env: (str) OpenAI environment name
+        :param env: (str) Environment name
+        :param exp_name: (str) Experiment name
         :param seed: (int) Seed for RNG
         :param hidden_layers: (List[int]) Hidden layers size of policy & Q networks
         :param lr: (float) Learning rate for policy, Q networks & entropy coefficient optimizers
@@ -43,11 +44,8 @@ class SAC:
         :param save_freq: (int) Model saving frequency
         :param render: (bool) Whether to render the training result in video
         :param plot: (bool) Whether to plot the statistics and save as image
-        :param model_dir: (str) Model directory
-        :param video_dir: (str) Video directory
-        :param figure_dir: (str) Figure directory
         '''
-        algo = 'SAC'
+        algo = 'sac'
         self.env = gym.make(args.env)
         self.seed(args.seed)
         observation_space = self.env.observation_space
@@ -84,8 +82,16 @@ class SAC:
         self.save_freq = args.save_freq
         self.render = args.render
         self.plot = args.plot
-        self.logger = Logger(args.env, args.model_dir, args.video_dir, args.figure_dir)
-        self.logger.log(f'Algorithm: {algo}\nEnvironment: {args.env}\nSeed: {args.seed}')
+        if args.exp_name:
+            exp_name = args.exp_name
+            log_dir = os.path.join(os.getcwd(), 'data', exp_name, f'{exp_name}_s{args.seed}')
+        else:
+            exp_name = None
+            log_dir = None
+        self.logger = Logger(log_dir=log_dir, exp_name=exp_name)
+        config_dict = vars(args)
+        config_dict['algo'] = algo
+        self.logger.save_config(config_dict)
         self.logger.set_saver(self.ac)
 
 
@@ -139,13 +145,13 @@ class SAC:
         actions_, logp_actions = self.ac.pi(observations)
 
         # Whether to enable entropy temperature adjustment
-        if self.ent_target is not None:
-            self.ent_coeff = torch.exp(self.log_ent_coeff.detach())
+        if hasattr(self, 'ent_target'):
+            self.ent_coeff = torch.exp(self.log_ent_coeff.detach()).item()
             self.ent_coeff_opt.zero_grad()
             ent_coeff_loss = -(self.log_ent_coeff * (logp_actions + self.ent_target).detach()).mean()
             ent_coeff_loss.backward()
             self.ent_coeff_opt.step()
-            self.logger.add(EntCoeffLoss=ent_coeff_loss.item())
+            self.logger.add({'entropy-coeff-loss': ent_coeff_loss.item()})
 
         self.q_opt.zero_grad()
         targets = compute_targets(rewards, next_observations, terminated)
@@ -160,12 +166,14 @@ class SAC:
 
         # Update target networks parameters according to Polyak average
         polyak_update(self.ac.parameters(), self.ac_target.parameters(), self.tau)
-        self.logger.add(PiLoss=pi_loss.item(),
-                        QLoss=q_loss.item(),
-                        Q1Values=q1_values.detach().numpy(),
-                        Q2Values=q2_values.detach().numpy(),
-                        LogPi=logp_actions.detach().numpy(),
-                        EntCoeff=self.ent_coeff.item())
+        self.logger.add({
+            'pi-loss': pi_loss.item(),
+            'q-loss': q_loss.item(),
+            'q1-values': q1_values.detach().numpy(),
+            'q2-values': q2_values.detach().numpy(),
+            'log-probs': logp_actions.detach().numpy(),
+            'entropy-coeff': self.ent_coeff
+        })
 
     def train(self):
         step = 0
@@ -195,23 +203,26 @@ class SAC:
                             self.update_params()
 
                     if terminated or len(rewards) == self.max_ep_len or step % self.steps_per_epoch == 0:
-                        self.logger.add(Return=sum(rewards), EpLen=len(rewards))
+                        self.logger.add({
+                            'episode-return': sum(rewards),
+                            'episode-length': len(rewards)
+                        })
                         break
                 if step % self.steps_per_epoch == 0:
                     break
 
-            self.logger.log_tabular('Epoch', epoch)
-            self.logger.log_tabular('PiLoss')
-            self.logger.log_tabular('QLoss')
-            self.logger.log_tabular('Q1Values')
-            self.logger.log_tabular('Q2Values')
-            self.logger.log_tabular('Return')
-            self.logger.log_tabular('EpLen')
-            self.logger.log_tabular('EntCoeff')
-            if self.ent_target is not None:
-                self.logger.log_tabular('EntCoeffLoss')
-
-            self.logger.log()
+            self.logger.log_epoch('epoch', epoch)
+            self.logger.log_epoch('pi-loss', average_only=True)
+            self.logger.log_epoch('q-loss', average_only=True)
+            self.logger.log_epoch('q1-values', need_optima=True)
+            self.logger.log_epoch('q2-values', need_optima=True)
+            self.logger.log_epoch('episode-return', need_optima=True)
+            self.logger.log_epoch('episode-length', average_only=True)
+            self.logger.log_epoch('entropy-coeff', average_only=True)
+            self.logger.log_epoch('total-env-interacts', step)
+            if hasattr(self, 'ent_target'):
+                self.logger.log_epoch('entropy-coeff-loss', average_only=True)
+            self.logger.dump_epoch()
 
             if self.save and epoch % self.save_freq == 0:
                 self.logger.save_state()
@@ -226,13 +237,15 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Soft Actor-Critic')
     parser.add_argument('--env', type=str, default='HalfCheetah-v2',
                         help='Environment ID')
+    parser.add_argument('--exp-name', type=str, default='sac',
+                        help='Experiment name')
     parser.add_argument('--seed', type=int, default=0,
                         help='Seed for RNG')
-    parser.add_argument('--hidden-layers', nargs='+', type=int,
+    parser.add_argument('--hidden-layers', nargs='+', type=int, default=[256, 256],
                         help='Hidden layers size of policy & value function networks')
     parser.add_argument('--lr', type=float, default=1e-3,
                         help='Learning rate for policy, Q networks & entropy coefficient optimizers')
-    parser.add_argument('--epochs', type=int, default=50,
+    parser.add_argument('--epochs', type=int, default=10,
                         help='Number of epochs')
     parser.add_argument('--steps-per-epoch', type=int, default=4000,
                         help='Maximum number of steps for each epoch')
@@ -254,7 +267,7 @@ if __name__ == '__main__':
                         help='Polyak averaging update coefficient')
     parser.add_argument('--ent-coeff', type=float, default=0.2,
                         help='Entropy regularization coefficient')
-    parser.add_argument('--adjust-ent-coeff', action='store_true',
+    parser.add_argument('--adjust-ent-coeff', action='store_false',
                         help='Whether to enable automating entropy adjustment scheme')
     parser.add_argument('--ent-coeff-init', type=float, default=1.0, 
                         help='Initial value for automating entropy adjustment scheme')
@@ -270,12 +283,6 @@ if __name__ == '__main__':
                         help='Whether to save training result as video')
     parser.add_argument('--plot', action='store_true',
                         help='Whether to plot training statistics and save as image')
-    parser.add_argument('--model-dir', type=str, default='./zoo/pg/output/models/sac',
-                        help='Where to save the model')
-    parser.add_argument('--video-dir', type=str, default='./zoo/pg/output/videos/sac',
-                        help='Where to save the video output')
-    parser.add_argument('--figure-dir', type=str, default='./zoo/pg/output/figures/sac',
-                        help='Where to save the plots')
     args = parser.parse_args()
 
     agent = SAC(args)

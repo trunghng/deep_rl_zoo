@@ -272,7 +272,7 @@ class MLPStochasticActorCritic(nn.Module):
             self.actor = MLPDiagGaussianActor(obs_dim, action_space.shape[0], hidden_sizes, activation)
         elif isinstance(action_space, Discrete):
             self.actor = MLPCategoricalActor(obs_dim, action_space.n, hidden_sizes, activation)
-        self.critic = MLPVFunction(hidden_sizes, activation, obs_dim)
+        self.critic = MLPVFunction(obs_dim, hidden_sizes, activation)
 
 
     def step(self, observation):
