@@ -29,7 +29,6 @@ class VPG:
         :param max_ep_len: (int) Maximum episode/trajectory length
         :param gamma: (float) Discount factor
         :param lamb: (float) Lambda for GAE
-        :param goal: (float) Total reward threshold for early stopping
         :param save: (bool) Whether to save the final model
         :param save_freq: (int) Model saving frequency
         :param render: (bool) Whether to render the training result in video
@@ -89,7 +88,7 @@ class VPG:
         def compute_v_loss(observations, rewards_to_go):
             values = self.ac.critic(observations)
             loss = ((values - rewards_to_go) ** 2).mean()
-            return loss
+            return loss, values
 
         observations, actions, log_probs, advs, rewards_to_go = self.buffer.get()
 
@@ -101,14 +100,15 @@ class VPG:
 
         for _ in range(self.train_v_iters):
             self.critic_opt.zero_grad()
-            v_loss = compute_v_loss(observations, rewards_to_go)
+            v_loss, v_values = compute_v_loss(observations, rewards_to_go)
             v_loss.backward()
             mpi.mpi_avg_grads(self.ac.critic)
             self.critic_opt.step()
 
         self.logger.add({
             'pi-loss': pi_loss.item(),
-            'v-loss': v_loss.item()
+            'v-loss': v_loss.item(),
+            'v-values': v_values.detach().numpy()
         })
 
 
@@ -151,6 +151,7 @@ class VPG:
             self.logger.log_epoch('epoch', epoch)
             self.logger.log_epoch('pi-loss', average_only=True)
             self.logger.log_epoch('v-loss', average_only=True)
+            self.logger.log_epoch('v-values', need_optima=True)
             self.logger.log_epoch('episode-return', need_optima=True)
             self.logger.log_epoch('episode-length', average_only=True)
             self.logger.log_epoch('total-env-interacts', epoch * self.steps_per_epoch)
@@ -162,7 +163,7 @@ class VPG:
         if self.render:
             self.logger.render(self.env)
         if self.plot:
-            pass
+            self.logger.plot()
 
 
 if __name__ == '__main__':
@@ -193,8 +194,6 @@ if __name__ == '__main__':
                         help='Discount factor')
     parser.add_argument('--lamb', type=float, default=0.97,
                         help='Lambda for Generalized Advantage Estimation')
-    parser.add_argument('--goal', type=int,
-                        help='Total reward threshold for early stopping')
     parser.add_argument('--save', action='store_true',
                         help='Whether to save training model')
     parser.add_argument('--save-freq', type=int, default=10,

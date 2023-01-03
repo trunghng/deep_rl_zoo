@@ -33,12 +33,12 @@ class PPO:
         :param kl_target: (float) KL divergence threshold
         :param clip: (bool) Whether to use clipping, enable penalty otherwise
         :param clip_ratio: (float) Hyperparamter for clipping the policy objective
-        :param goal: (float) Total reward threshold for early stopping
         :param save: (bool) Whether to save the final model
         :param save_freq: (int) Model saving frequency
         :param render: (bool) Whether to render the training result in video
         :param plot: (bool) Whether to plot the statistics and save as image
         '''
+        # self.env = gym.make(args.env)
         self.env = gym.make(args.env)
         self.seed(args.seed)
         observation_space = self.env.observation_space
@@ -59,7 +59,6 @@ class PPO:
             self.clip_ratio = args.clip_ratio
         else:
             pass
-        self.goal = args.goal
         self.save = args.save
         self.save_freq = args.save_freq
         self.render = args.render
@@ -95,19 +94,21 @@ class PPO:
         def compute_pi_loss(observations, actions, logps_old, advs):
             pi, logps = self.ac.actor(observations, actions)
             log_ratio = logps - logps_old
-            loss_cpi = torch.exp(log_ratio) * advs
+            ratio = log_ratio.exp()
+            loss_cpi = ratio * advs
             clip_advs = ((1 + self.clip_ratio) * (advs > 0) + (1 - self.clip_ratio) * (advs < 0)) * advs
             pi_loss = -torch.min(loss_cpi, clip_advs).mean() 
 
             # approximated avg KL
-            # approx_kl = (torch.exp(log_ratio) - 1 - log_ratio).mean().item() # stable-baseline3's approx formula
-            approx_kl = (-log_ratio).mean().item()
+            # approx_kl = (-log_ratio).mean().item()
+            # http://joschu.net/blog/kl-approx.html
+            approx_kl = ((ratio - 1) - log_ratio).mean().item()
             return pi_loss, approx_kl
 
         def compute_v_loss(observations, rewards_to_go):
-            values = self.ac.critic(observations)
-            v_loss = ((values - rewards_to_go) ** 2).mean()
-            return v_loss
+            v_values = self.ac.critic(observations)
+            v_loss = ((v_values - rewards_to_go) ** 2).mean()
+            return v_loss, v_values
 
         observations, actions, logps_prob, advs, rewards_to_go = self.buffer.get()
 
@@ -124,7 +125,7 @@ class PPO:
 
         for _ in range(self.train_v_iters):
             self.critic_opt.zero_grad()
-            v_loss = compute_v_loss(observations, rewards_to_go)
+            v_loss, v_values = compute_v_loss(observations, rewards_to_go)
             v_loss.backward()
             mpi.mpi_avg_grads(self.ac.critic)
             self.critic_opt.step()
@@ -132,6 +133,7 @@ class PPO:
         self.logger.add({
             'pi-loss': pi_loss.item(),
             'v-loss': v_loss.item(),
+            'v-values': v_values.detach().numpy(),
             'kl': kl
         })
 
@@ -174,6 +176,7 @@ class PPO:
             self.logger.log_epoch('epoch', epoch)
             self.logger.log_epoch('pi-loss', average_only=True)
             self.logger.log_epoch('v-loss', average_only=True)
+            self.logger.log_epoch('v-values', need_optima=True)
             self.logger.log_epoch('kl', average_only=True)
             self.logger.log_epoch('episode-return', need_optima=True)
             self.logger.log_epoch('episode-length', average_only=True)
@@ -186,12 +189,12 @@ class PPO:
         if self.render:
             self.logger.render(self.env)
         if self.plot:
-            pass
+            self.logger.plot()
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Proximal Policy Optimization')
-    parser.add_argument('--env', type=str, choices=['CartPole-v0', 'HalfCheetah-v2'],
+    parser.add_argument('--env', type=str, choices=['CartPole-v0', 'HalfCheetah-v2', 'BipedalWalker-v3'],
                         default='HalfCheetah-v2', help='Environment ID')
     parser.add_argument('--exp-name', type=str, default='ppo',
                         help='Experiment name')
@@ -225,8 +228,6 @@ if __name__ == '__main__':
                         help='Whether to use PPO-Clip, use PPO-Penalty otherwise')
     parser.add_argument('--clip-ratio', type=float, default=0.2,
                         help='Hyperparameter for clipping in the policy objective')
-    parser.add_argument('--goal', type=int,
-                        help='Total reward threshold for early stopping')
     parser.add_argument('--save', action='store_true',
                         help='Whether to save training model')
     parser.add_argument('--save-freq', type=int, default=10,

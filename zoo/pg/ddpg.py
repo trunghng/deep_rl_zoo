@@ -18,30 +18,30 @@ class DDPG:
         '''
         Deep Determinisitic Policy Gradient
 
-        :param env: (str) Environment ID
-        :param exp_name: (str) Experiment name
-        :param seed: (int) Seed for RNG
-        :param hidden_layers: (List[int]) Hidden layers size of policy & Q networks
-        :param pi_lr: (float) Learning rate for policy optimizer
-        :param q_lr: (float) Learning rate for value function optimizer
-        :param epochs: (int) Number of epochs
-        :param steps_per_epoch: (int) Maximum number of steps per epoch
-        :param max_ep_len: (int) Maximum length of an episode
-        :param buffer_size: (int) Replay buffer size
-        :param batch_size: (int) Minibatch size
-        :param start_step: (int) Start step to begin select action according to policy network
-        :param update_every: (int) Parameters update frequency
+        :param env: (str) Environment ID.
+        :param exp_name: (str) Experiment name.
+        :param seed: (int) Seed for RNG.
+        :param hidden_layers: (List[int]) Hidden layers size of policy & Q networks.
+        :param pi_lr: (float) Learning rate for policy optimizer.
+        :param q_lr: (float) Learning rate for value function optimizer.
+        :param epochs: (int) Number of epochs to train agent.
+        :param steps_per_epoch: (int) Maximum number of steps per epoch.
+        :param max_ep_len: (int) Maximum length of an episode.
+        :param buffer_size: (int) Replay buffer size.
+        :param batch_size: (int) Minibatch size.
+        :param start_step: (int) Start step to begin select action according to policy network.
+        :param update_every: (int) Parameters update frequency.
         :param update_after: (int) Number of steps after which paramters update is allowed. 
                     This guarantees there are enough number of training experience in the replay buffer
         :param gamma: (float) Discount factor
         :param tau: (float) Polyak averaging update coefficient
         :param sigma: (float) Standard deviation of mean-zero Gaussian noise for exploration.
                     The original DDPG used Ornstein-Uhlenbeck process instead.
-        :param goal: (float) Total reward threshold for early stopping
-        :param save: (bool) Whether to save the final model
-        :param save_freq: (int) Model saving frequency
-        :param render: (bool) Whether to render the training result in video
-        :param plot: (bool) Whether to plot the statistics and save as image
+        :param test_episodes: (int) Number of episodes to test the deterministic policy at the end of each episode.
+        :param save: (bool) Whether to save the final model.
+        :param save_freq: (int) Model saving frequency.
+        :param render: (bool) Whether to render the training result in video.
+        :param plot: (bool) Whether to plot the statistics and save as image.
         '''
         algo = 'ddpg'
         self.env = gym.make(args.env)
@@ -66,7 +66,7 @@ class DDPG:
         self.gamma = args.gamma
         self.tau = args.tau
         self.sigma = args.sigma
-        self.goal = args.goal
+        self.test_episodes = args.test_episodes
         self.save = args.save
         self.save_freq = args.save_freq
         self.render = args.render
@@ -133,6 +133,24 @@ class DDPG:
         })
 
 
+    def test(self):
+        env = deepcopy(self.env)
+        for _ in range(self.test_episodes):
+            observation = env.reset()
+            rewards = []
+            while True:
+                action = self.ac.act(observation)
+                observation, reward, terminated, _ = env.step(action)
+                rewards.append(reward)
+
+                if terminated or len(rewards) == self.max_ep_len:
+                    self.logger.add({
+                        'test-episode-return': sum(rewards),
+                        'test-episode-length': len(rewards)
+                    })
+                    break
+
+
     def train(self):
         step = 0
         for epoch in range(1, self.epochs + 1):
@@ -163,10 +181,11 @@ class DDPG:
                     if terminated or len(rewards) == self.max_ep_len or step % self.steps_per_epoch == 0:
                         self.logger.add({
                             'episode-return': sum(rewards),
-                            'episode-length' :len(rewards)
+                            'episode-length': len(rewards)
                         })
                         break
                 if step % self.steps_per_epoch == 0:
+                    self.test()
                     break
 
             self.logger.log_epoch('epoch', epoch)
@@ -175,6 +194,8 @@ class DDPG:
             self.logger.log_epoch('q-values', need_optima=True)
             self.logger.log_epoch('episode-return', need_optima=True)
             self.logger.log_epoch('episode-length', average_only=True)
+            self.logger.log_epoch('test-episode-return', need_optima=True)
+            self.logger.log_epoch('test-episode-length', average_only=True)
             self.logger.log_epoch('total-env-interacts', step)
             self.logger.dump_epoch()
 
@@ -184,7 +205,7 @@ class DDPG:
         if self.render:
             self.logger.render(self.env)
         if self.plot:
-            pass
+            self.logger.plot()
 
 
 if __name__ == '__main__':
@@ -223,8 +244,8 @@ if __name__ == '__main__':
                         help='Polyak averaging update coefficient')
     parser.add_argument('--sigma', type=float, default=0.1,
                         help='Standard deviation of mean-zero Gaussian noise for exploration')
-    parser.add_argument('--goal', type=int,
-                        help='Total reward threshold for early stopping')
+    parser.add_argument('--test-episodes', type=int, default=10,
+                        help='Number of episodes to test the deterministic policy at the end of each epoch')
     parser.add_argument('--save', action='store_true',
                         help='Whether to save training model')
     parser.add_argument('--save-freq', type=int, default=1,

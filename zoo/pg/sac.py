@@ -18,32 +18,32 @@ class SAC:
         '''
         Soft Actor-Critic
 
-        :param env: (str) Environment name
-        :param exp_name: (str) Experiment name
-        :param seed: (int) Seed for RNG
-        :param hidden_layers: (List[int]) Hidden layers size of policy & Q networks
-        :param lr: (float) Learning rate for policy, Q networks & entropy coefficient optimizers
-        :param epochs: (int) Number of epochs
-        :param steps_per_epoch: (int) Maximum number of steps per epoch
-        :param max_ep_len: (int) Maximum length of an episode
-        :param buffer_size: (int) Replay buffer size
-        :param batch_size: (int) Minibatch size
-        :param start_step: (int) Start step to begin select action according to policy network
-        :param update_every: (int) Parameters update frequency
+        :param env: (str) Environment ID.
+        :param exp_name: (str) Experiment name.
+        :param seed: (int) Seed for RNG.
+        :param hidden_layers: (List[int]) Hidden layers size of policy & Q networks.
+        :param lr: (float) Learning rate for policy, Q networks & entropy coefficient optimizers.
+        :param epochs: (int) Number of epochs to train agent.
+        :param steps_per_epoch: (int) Maximum number of steps per epoch.
+        :param max_ep_len: (int) Maximum length of an episode.
+        :param buffer_size: (int) Replay buffer size.
+        :param batch_size: (int) Minibatch size.
+        :param start_step: (int) Start step to begin select action according to policy network.
+        :param update_every: (int) Parameters update frequency.
         :param update_after: (int) Number of steps after which paramters update is allowed. 
-                    This guarantees there are enough number of training experience in the replay buffer
+                    This guarantees there are enough number of training experience in the replay buffer.
         :param gamma: (float) Discount factor
-        :param tau: (float) Polyak averaging update coefficient
-        :param ent_coeff: (float) Entropy regularization coefficient
-        :param ent_coeff_init: (float) Initial value for automating entropy adjustment scheme
-        :param ent_target: (float) Desired entropy, used for automating entropy adjustment
+        :param tau: (float) Polyak averaging update coefficient.
+        :param ent_coeff: (float) Entropy regularization coefficient.
+        :param ent_coeff_init: (float) Initial value for automating entropy adjustment scheme.
+        :param ent_target: (float) Desired entropy, used for automating entropy adjustment.
         :param adjust_ent_coeff: (bool) Whether to use automating entropy adjustment scheme, 
-                    use fixed `ent_coeff` otherwise
-        :param goal: (float) Total reward threshold for early stopping
-        :param save: (bool) Whether to save the final model
-        :param save_freq: (int) Model saving frequency
-        :param render: (bool) Whether to render the training result in video
-        :param plot: (bool) Whether to plot the statistics and save as image
+                    use fixed `ent_coeff` otherwise.
+        :param test_episodes: (int) Number of episodes to test the deterministic policy at the end of each episode.
+        :param save: (bool) Whether to save the final model.
+        :param save_freq: (int) Model saving frequency.
+        :param render: (bool) Whether to render the training result in video.
+        :param plot: (bool) Whether to plot the statistics and save as image.
         '''
         algo = 'sac'
         self.env = gym.make(args.env)
@@ -77,7 +77,7 @@ class SAC:
             self.ent_coeff_opt = Adam([self.log_ent_coeff], lr=args.lr)
         else:
             self.ent_coeff = args.ent_coeff
-        self.goal = args.goal
+        self.test_episodes = args.test_episodes
         self.save = args.save
         self.save_freq = args.save_freq
         self.render = args.render
@@ -175,6 +175,25 @@ class SAC:
             'entropy-coeff': self.ent_coeff
         })
 
+
+    def test(self):
+        env = deepcopy(self.env)
+        for _ in range(self.test_episodes):
+            observation = env.reset()
+            rewards = []
+            while True:
+                action = self.ac.act(observation)
+                observation, reward, terminated, _ = env.step(action)
+                rewards.append(reward)
+
+                if terminated or len(rewards) == self.max_ep_len:
+                    self.logger.add({
+                        'test-episode-return': sum(rewards),
+                        'test-episode-length': len(rewards)
+                    })
+                    break
+
+
     def train(self):
         step = 0
         for epoch in range(1, self.epochs + 1):
@@ -209,6 +228,7 @@ class SAC:
                         })
                         break
                 if step % self.steps_per_epoch == 0:
+                    self.test()
                     break
 
             self.logger.log_epoch('epoch', epoch)
@@ -218,6 +238,8 @@ class SAC:
             self.logger.log_epoch('q2-values', need_optima=True)
             self.logger.log_epoch('episode-return', need_optima=True)
             self.logger.log_epoch('episode-length', average_only=True)
+            self.logger.log_epoch('test-episode-return', need_optima=True)
+            self.logger.log_epoch('test-episode-length', average_only=True)
             self.logger.log_epoch('entropy-coeff', average_only=True)
             self.logger.log_epoch('total-env-interacts', step)
             if hasattr(self, 'ent_target'):
@@ -230,7 +252,7 @@ class SAC:
         if self.render:
             self.logger.render(self.env)
         if self.plot:
-            pass
+            self.logger.plot()
 
 
 if __name__ == '__main__':
@@ -273,8 +295,8 @@ if __name__ == '__main__':
                         help='Initial value for automating entropy adjustment scheme')
     parser.add_argument('--ent-target', type=str, default='auto',
                         help='Desired entropy, used for automating entropy adjustment')
-    parser.add_argument('--goal', type=int,
-                        help='Total reward threshold for early stopping')
+    parser.add_argument('--test-episodes', type=int, default=10,
+                        help='Number of episodes to test the deterministic policy at the end of each epoch')
     parser.add_argument('--save', action='store_true',
                         help='Whether to save training model')
     parser.add_argument('--save-freq', type=int, default=1,

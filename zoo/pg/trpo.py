@@ -25,13 +25,12 @@ class TRPO:
         :param seed: (int) Seed for RNG
         :param hidden_layers: (List[int]) Hidden layers size of policy & value function networks
         :param v_lr: (float) Learning rate for value function optimizer
-        :param epochs: (int) Number of epochs
+        :param epochs: (int) Number of epochs to train agent.
         :param steps_per_epoch: (int) Maximum number of steps per epoch
         :param train_v_iters: (int) Number of GD-steps to take on value function per epoch
         :param max_ep_len: (int) Maximum episode/trajectory length
         :param gamma: (float) Discount factor
         :param lamb: (float) Lambda for GAE-lambda
-        :param goal: (float) Total reward threshold for early stopping
         :param delta: (float) KL divergence threshold
         :param damping_coeff: (float) Damping coefficient
         :param cg_iters: (int) Number of iterations of CG to perform
@@ -60,14 +59,11 @@ class TRPO:
         self.damping_coeff = args.damping_coeff
         self.cg_iters = args.cg_iters
         if args.linesearch:
-            self.linesearch = True
             self.backtrack_iters = args.backtrack_iters
             self.backtrack_coeff = args.backtrack_coeff
             algo = 'trpo'
         else:
-            self.linesearch = False
             algo = 'npg'
-        self.goal = args.goal
         self.save = args.save
         self.save_freq = args.save_freq
         self.render = args.render
@@ -132,7 +128,7 @@ class TRPO:
         def compute_v_loss():
             values = self.ac.critic(observations)
             loss = ((values - rewards_to_go) ** 2).mean()
-            return loss
+            return loss, values
 
         pi_loss = compute_pi_loss()
         pi_loss_old = pi_loss.item()
@@ -184,15 +180,15 @@ class TRPO:
             pi_loss, kl = compute_pi_loss_kl()
             return pi_loss, kl.item()
 
-        if self.linesearch:
+        if hasattr(self, 'backtrack_coeff'):
             for j in range(self.backtrack_iters):
                 pi_loss, kl = linesearch(self.backtrack_coeff ** j)
                 if kl <= self.delta and pi_loss <= pi_loss_old:
                     self.logger.log('Accepting new params at step %d of line search'%j)
                     break
-                if j == self.backtrack_iters - 1:
-                    self.logger.log('Line search failed! Keeping old params')
-                    pi_loss, kl = linesearch(0)
+            else:
+                self.logger.log('Line search failed! Keeping old params')
+                pi_loss, kl = linesearch(0)
             pi_loss.backward()
             mpi.mpi_avg_grads(self.ac.actor)
         else:
@@ -200,7 +196,7 @@ class TRPO:
 
         for _ in range(self.train_v_iters):
             self.critic_opt.zero_grad()
-            v_loss = compute_v_loss()
+            v_loss, v_values = compute_v_loss()
             v_loss.backward()
             mpi.mpi_avg_grads(self.ac.critic)
             self.critic_opt.step()
@@ -208,6 +204,7 @@ class TRPO:
         self.logger.add({
             'pi-loss': pi_loss.item(),
             'v-loss': v_loss.item(),
+            'v-values': v_values.detach().numpy(),
             'kl': kl
         })
 
@@ -250,6 +247,7 @@ class TRPO:
             self.logger.log_epoch('epoch', epoch)
             self.logger.log_epoch('pi-loss', average_only=True)
             self.logger.log_epoch('v-loss', average_only=True)
+            self.logger.log_epoch('v-values', need_optima=True)
             self.logger.log_epoch('kl', average_only=True)
             self.logger.log_epoch('episode-return', need_optima=True)
             self.logger.log_epoch('episode-length', average_only=True)
@@ -262,7 +260,7 @@ class TRPO:
         if self.render:
             self.logger.render(self.env)
         if self.plot:
-            pass
+            self.logger.plot()
 
 
 if __name__ == '__main__':
@@ -291,8 +289,6 @@ if __name__ == '__main__':
                         help='Discount factor')
     parser.add_argument('--lamb', type=float, default=0.97,
                         help='Lambda for Generalized Advantage Estimation')
-    parser.add_argument('--goal', type=int,
-                        help='Total reward threshold for early stopping')
     parser.add_argument('--delta', type=float, default=0.01,
                         help='KL divergence threshold')
     parser.add_argument('--damping-coeff', type=float, default=0.1,

@@ -2,7 +2,7 @@
     "env":	"HalfCheetah-v2",
     "exp_name":	"ppo-cheetah",
     "cpu":	4,
-    "seed":	0,
+    "seed":	3,
     "hidden_layers":	[
         64,
         32
@@ -19,7 +19,7 @@
     "kl_target":	0.01,
     "clip":	true,
     "clip_ratio":	0.2,
-    "save":	true,
+    "save":	false,
     "save_freq":	10,
     "render":	false,
     "plot":	true,

@@ -1,0 +1,120 @@
+{
+	"sac": {
+		"type": "off-policy",
+		"info-variants": [
+			"pi-loss",
+			"q-loss",
+			"average-q1-values",
+			"std-q1-values",
+			"max-q1-values",
+			"min-q1-values",
+			"average-q2-values",
+			"std-q2-values",
+			"max-q2-values",
+			"min-q2-values",
+			"average-episode-return",
+			"std-episode-return",
+			"max-episode-return",
+			"min-episode-return",
+			"episode-length",
+			"average-test-episode-return",
+			"std-test-episode-return",
+			"max-test-episode-return",
+			"min-test-episode-return",
+			"test-episode-length",
+			"entropy-coeff",
+			"entropy-coeff-loss"
+		],
+		"time-variants": [
+			"epoch",
+			"total-env-interacts"
+		]
+	},
+	"ddpg": {
+		"type": "off-policy",
+		"info-variants": [
+			"pi-loss",
+			"q-loss",
+			"average-q-values",
+			"std-q-values",
+			"max-q-values",
+			"min-q-values",
+			"average-episode-return",
+			"std-episode-return",
+			"max-episode-return",
+			"min-episode-return",
+			"episode-length",
+			"average-test-episode-return",
+			"std-test-episode-return",
+			"max-test-episode-return",
+			"min-test-episode-return",
+			"test-episode-length"
+		],
+		"time-variants": [
+			"epoch",
+			"total-env-interacts"
+		]
+	},
+	"ppo": {
+		"type": "on-policy",
+		"info-variants": [
+			"pi-loss",
+			"v-loss",
+			"average-v-values",
+			"std-v-values",
+			"max-v-values",
+			"min-v-values",
+			"kl",
+			"average-episode-return",
+			"std-episode-return",
+			"max-episode-return",
+			"min-episode-return",
+			"episode-length"
+		],
+		"time-variants": [
+			"epoch",
+			"total-env-interacts"
+		]
+	},
+	"trpo": {
+		"type": "on-policy",
+		"info-variants": [
+			"pi-loss",
+			"v-loss",
+			"average-v-values",
+			"std-v-values",
+			"max-v-values",
+			"min-v-values",
+			"kl",
+			"average-episode-return",
+			"std-episode-return",
+			"max-episode-return",
+			"min-episode-return",
+			"episode-length"
+		],
+		"time-variants": [
+			"epoch",
+			"total-env-interacts"
+		]
+	},
+	"vpg": {
+		"type": "on-policy",
+		"info-variants": [
+			"pi-loss",
+			"v-loss",
+			"average-v-values",
+			"std-v-values",
+			"max-v-values",
+			"min-v-values",
+			"average-episode-return",
+			"std-episode-return",
+			"max-episode-return",
+			"min-episode-return",
+			"episode-length"
+		],
+		"time-variants": [
+			"epoch",
+			"total-env-interacts"
+		]
+	}
+}

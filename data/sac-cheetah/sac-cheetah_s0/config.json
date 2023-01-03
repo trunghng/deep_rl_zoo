@@ -21,7 +21,7 @@
     "adjust_ent_coeff":	true,
     "ent_coeff_init":	1.0,
     "ent_target":	"auto",
-    "goal":	null,
+    "test_episodes":	10,
     "save":	true,
     "save_freq":	1,
     "render":	true,
