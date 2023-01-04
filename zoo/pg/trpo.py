@@ -134,6 +134,7 @@ class TRPO:
         pi_loss_old = pi_loss.item()
         # Compute policy gradient vector
         g = flatten(grad(pi_loss, self.ac.actor.parameters()))
+        g = torch.as_tensor(mpi.mpi_avg(g), dtype=torch.float32)
 
         def Fx(x):
             '''
@@ -144,7 +145,7 @@ class TRPO:
             grad_kl = flatten(grad(kl, self.ac.actor.parameters(), create_graph=True))
             grad_kl_x = (grad_kl * x).sum()
             Fx_ = flatten(grad(grad_kl_x, self.ac.actor.parameters()))
-            return Fx_ + self.damping_coeff * x
+            return torch.as_tensor(mpi.mpi_avg(Fx_), dtype=torch.float32) + self.damping_coeff * x
 
         '''
         Compute natural gradient: x = (F^-1)g
