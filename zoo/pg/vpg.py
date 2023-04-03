@@ -6,7 +6,7 @@ import argparse, random, os
 import common.mpi_utils as mpi
 from common.logger import Logger
 from zoo.pg.network import MLPStochasticActorCritic
-from zoo.pg.utils import Buffer
+from zoo.pg.utils import Buffer, set_seed
 
 
 class VPG:
@@ -35,7 +35,7 @@ class VPG:
         :param plot: (bool) Whether to plot the statistics and save as image
         '''
         self.env = gym.make(args.env)
-        self.seed(args.seed)
+        set_seed(args.seed + 10 * mpi.proc_rank())
         observation_space = self.env.observation_space
         action_space = self.env.action_space
         self.ac = MLPStochasticActorCritic(observation_space, action_space, args.hidden_layers)
@@ -63,17 +63,6 @@ class VPG:
         config_dict['algo'] = 'vpg'
         self.logger.save_config(config_dict)
         self.logger.set_saver(self.ac)
-
-
-    def seed(self, seed: int):
-        '''
-        Set global seed
-        '''
-        seed += 10 * mpi.proc_rank()
-        torch.manual_seed(seed)
-        np.random.seed(seed)
-        random.seed(seed)
-        self.env.seed(seed)
 
 
     def update_params(self):
@@ -168,8 +157,8 @@ class VPG:
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Vanilla Policy Gradient')
-    parser.add_argument('--env', type=str, choices=['CartPole-v0', 'HalfCheetah-v2'],
-                        default='HalfCheetah-v2' ,help='Environment ID')
+    parser.add_argument('--env', type=str, default='HalfCheetah-v2',
+                        help='Environment ID')
     parser.add_argument('--exp-name', type=str, default='vpg',
                         help='Experiment name')
     parser.add_argument('--cpu', type=int, default=4,

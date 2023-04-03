@@ -11,7 +11,7 @@ import time, atexit, os, json
 from datetime import datetime as dt
 from collections import defaultdict
 from common.mpi_utils import proc_rank, mpi_get_statistics, mpi_print
-from common.plot_utils import plot
+from common.plot import plot
 
 
 class Logger:

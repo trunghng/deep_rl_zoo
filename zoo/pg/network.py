@@ -167,7 +167,7 @@ class MLPStochasticDiagGaussianActor(nn.Module):
         else:
             u = pi_u.rsample()
 
-        # Bound action into [-1, 1] by apply tanh function
+        # Bound action into [-1, 1] by applying tanh function
         if need_logprob:
             '''
             Compute log(p_a) from log(p_u) as:
@@ -321,7 +321,7 @@ class MLPDeterministicActorCritic(nn.Module):
         return self.step(observation, 0)
 
 
-class MLPStochasticActorDoubleCritic(nn.Module):
+class MLPSACActorCritic(nn.Module):
 
 
     def __init__(self,
@@ -344,4 +344,3 @@ class MLPStochasticActorDoubleCritic(nn.Module):
         with torch.no_grad():
             action, _ = self.pi(observation, deterministic, False)
         return action.numpy()
-

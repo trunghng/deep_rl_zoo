@@ -7,8 +7,8 @@ from torch.autograd import grad
 import argparse, random, os, itertools
 from copy import deepcopy
 from common.logger import Logger
-from zoo.pg.network import MLPStochasticActorDoubleCritic
-from zoo.pg.utils import ReplayBuffer, polyak_update
+from zoo.pg.network import MLPSACActorCritic
+from zoo.pg.utils import ReplayBuffer, polyak_update, set_seed
 
 
 class SAC:
@@ -47,11 +47,11 @@ class SAC:
         '''
         algo = 'sac'
         self.env = gym.make(args.env)
-        self.seed(args.seed)
+        set_seed(args.seed)
         observation_space = self.env.observation_space
         action_space = self.env.action_space
         assert isinstance(action_space, Box), f'{algo} does not work with discrete action space env!'
-        self.ac = MLPStochasticActorDoubleCritic(observation_space, action_space, args.hidden_layers)
+        self.ac = MLPSACActorCritic(observation_space, action_space, args.hidden_layers)
         self.ac_target = deepcopy(self.ac)
         for p in self.ac_target.parameters():
             p.requires_grad = False
@@ -93,16 +93,6 @@ class SAC:
         config_dict['algo'] = algo
         self.logger.save_config(config_dict)
         self.logger.set_saver(self.ac)
-
-
-    def seed(self, seed):
-        '''
-        Set global seed
-        '''
-        torch.manual_seed(seed)
-        np.random.seed(seed)
-        random.seed(seed)
-        self.env.seed(seed)
 
 
     def update_params(self):
@@ -267,7 +257,7 @@ if __name__ == '__main__':
                         help='Hidden layers size of policy & value function networks')
     parser.add_argument('--lr', type=float, default=1e-3,
                         help='Learning rate for policy, Q networks & entropy coefficient optimizers')
-    parser.add_argument('--epochs', type=int, default=10,
+    parser.add_argument('--epochs', type=int, default=50,
                         help='Number of epochs')
     parser.add_argument('--steps-per-epoch', type=int, default=4000,
                         help='Maximum number of steps for each epoch')

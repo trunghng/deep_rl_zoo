@@ -1,0 +1,23 @@
+{
+    "env":	"HalfCheetah-v2",
+    "exp_name":	"vpg",
+    "cpu":	4,
+    "seed":	3,
+    "hidden_layers":	[
+        64,
+        32
+    ],
+    "pi_lr":	0.0003,
+    "v_lr":	0.001,
+    "epochs":	250,
+    "steps_per_epoch":	4000,
+    "train_v_iters":	80,
+    "max_ep_len":	1000,
+    "gamma":	0.99,
+    "lamb":	0.97,
+    "save":	false,
+    "save_freq":	10,
+    "render":	false,
+    "plot":	false,
+    "algo":	"vpg"
+}

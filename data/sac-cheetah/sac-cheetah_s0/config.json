@@ -7,7 +7,7 @@
         256
     ],
     "lr":	0.001,
-    "epochs":	10,
+    "epochs":	50,
     "steps_per_epoch":	4000,
     "max_ep_len":	1000,
     "buffer_size":	1000000,
@@ -22,9 +22,9 @@
     "ent_coeff_init":	1.0,
     "ent_target":	"auto",
     "test_episodes":	10,
-    "save":	true,
+    "save":	false,
     "save_freq":	1,
-    "render":	true,
+    "render":	false,
     "plot":	false,
     "algo":	"sac"
 }

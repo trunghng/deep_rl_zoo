@@ -22,6 +22,6 @@
     "save":	false,
     "save_freq":	10,
     "render":	false,
-    "plot":	true,
+    "plot":	false,
     "algo":	"ppo"
 }

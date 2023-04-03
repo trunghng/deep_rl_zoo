@@ -45,6 +45,15 @@ def polyak_update(params, target_params, tau):
             p_target.data.copy_((1 - tau) * p_target.data + tau * p.data)
 
 
+def set_seed(seed: int):
+    '''
+    Set global seed
+    '''
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+
+
 class Buffer:
 
 

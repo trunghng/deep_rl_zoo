@@ -46,7 +46,7 @@ def run_policy(get_action, args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Policy Testing')
-    parser.add_argument('-e', '--env', type=str, choices=['CartPole-v0', 'HalfCheetah-v2'],
+    parser.add_argument('-e', '--env', type=str, choices=['CartPole-v0', 'HalfCheetah-v2', 'Hopper-v2'],
                         help='Environment ID')
     parser.add_argument('-p', '--path', type=str,
                         help='Model path')

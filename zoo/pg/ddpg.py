@@ -8,7 +8,7 @@ import argparse, random, os
 from copy import deepcopy
 from common.logger import Logger
 from zoo.pg.network import MLPDeterministicActorCritic
-from zoo.pg.utils import ReplayBuffer, polyak_update
+from zoo.pg.utils import ReplayBuffer, polyak_update, set_seed
 
 
 class DDPG:
@@ -45,7 +45,7 @@ class DDPG:
         '''
         algo = 'ddpg'
         self.env = gym.make(args.env)
-        self.seed(args.seed)
+        set_seed(args.seed)
         observation_space = self.env.observation_space
         action_space = self.env.action_space
         assert isinstance(action_space, Box), f'{algo} does not work with discrete action space env!'
@@ -82,16 +82,6 @@ class DDPG:
         config_dict['algo'] = algo
         self.logger.save_config(config_dict)
         self.logger.set_saver(self.ac)
-
-
-    def seed(self, seed):
-        '''
-        Set global seed
-        '''
-        torch.manual_seed(seed)
-        np.random.seed(seed)
-        random.seed(seed)
-        self.env.seed(seed)
 
 
     def update_params(self):
@@ -222,7 +212,7 @@ if __name__ == '__main__':
                         help='Learning rate for policy optimizer')
     parser.add_argument('--q-lr', type=float, default=1e-3,
                         help='Learning rate for value function optimizer')
-    parser.add_argument('--epochs', type=int, default=10,
+    parser.add_argument('--epochs', type=int, default=50,
                         help='Number of epochs')
     parser.add_argument('--steps-per-epoch', type=int, default=4000,
                         help='Maximum number of steps for each epoch')

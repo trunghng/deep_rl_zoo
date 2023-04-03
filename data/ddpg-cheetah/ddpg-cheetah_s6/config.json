@@ -1,0 +1,28 @@
+{
+    "env":	"HalfCheetah-v2",
+    "exp_name":	"ddpg-cheetah",
+    "seed":	6,
+    "hidden_layers":	[
+        256,
+        256
+    ],
+    "pi_lr":	0.001,
+    "q_lr":	0.001,
+    "epochs":	50,
+    "steps_per_epoch":	4000,
+    "max_ep_len":	1000,
+    "buffer_size":	1000000,
+    "batch_size":	100,
+    "start_step":	10000,
+    "update_every":	50,
+    "update_after":	1000,
+    "gamma":	0.99,
+    "tau":	0.005,
+    "sigma":	0.1,
+    "test_episodes":	10,
+    "save":	false,
+    "save_freq":	1,
+    "render":	false,
+    "plot":	false,
+    "algo":	"ddpg"
+}

@@ -5,7 +5,7 @@ import gym
 import argparse, random, os
 import common.mpi_utils as mpi
 from common.logger import Logger
-from zoo.pg.utils import Buffer
+from zoo.pg.utils import Buffer, set_seed
 from zoo.pg.network import MLPStochasticActorCritic
 
 
@@ -40,7 +40,7 @@ class PPO:
         '''
         # self.env = gym.make(args.env)
         self.env = gym.make(args.env)
-        self.seed(args.seed)
+        set_seed(args.seed + 10 * mpi.proc_rank())
         observation_space = self.env.observation_space
         action_space = self.env.action_space
         self.ac = MLPStochasticActorCritic(observation_space, action_space, args.hidden_layers)
@@ -74,17 +74,6 @@ class PPO:
         config_dict['algo'] = 'ppo'
         self.logger.save_config(config_dict)
         self.logger.set_saver(self.ac)
-
-
-    def seed(self, seed: int):
-        '''
-        Set global seed
-        '''
-        seed += 10 * mpi.proc_rank()
-        torch.manual_seed(seed)
-        np.random.seed(seed)
-        random.seed(seed)
-        self.env.seed(seed)
 
 
     def update_params(self):
@@ -194,14 +183,14 @@ class PPO:
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Proximal Policy Optimization')
-    parser.add_argument('--env', type=str, choices=['CartPole-v0', 'HalfCheetah-v2', 'BipedalWalker-v3'],
-                        default='HalfCheetah-v2', help='Environment ID')
+    parser.add_argument('--env', type=str, default='HalfCheetah-v2',
+                        help='Environment ID')
     parser.add_argument('--exp-name', type=str, default='ppo',
                         help='Experiment name')
     parser.add_argument('--cpu', type=int, default=4,
                         help='Number of CPUs for parallel computing')
     parser.add_argument('--seed', type=int, default=0,
-                        help='Random seed')
+                        help='Seed for RNG')
     parser.add_argument('--hidden-layers', nargs='+', type=int, default=[64, 32],
                         help='Hidden layers size of policy & value function networks')
     parser.add_argument('--pi-lr', type=float, default=3e-4,

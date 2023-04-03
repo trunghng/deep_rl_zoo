@@ -8,7 +8,7 @@
     ],
     "pi_lr":	0.001,
     "q_lr":	0.001,
-    "epochs":	10,
+    "epochs":	50,
     "steps_per_epoch":	4000,
     "max_ep_len":	1000,
     "buffer_size":	1000000,
@@ -20,9 +20,9 @@
     "tau":	0.005,
     "sigma":	0.1,
     "test_episodes":	10,
-    "save":	true,
+    "save":	false,
     "save_freq":	1,
-    "render":	true,
+    "render":	false,
     "plot":	false,
     "algo":	"ddpg"
 }
