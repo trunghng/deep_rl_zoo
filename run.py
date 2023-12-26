@@ -4,7 +4,8 @@ import os.path as osp
 
 
 if __name__ == '__main__':
-    algos = ['ddpg', 'ppo', 'trpo', 'vpg']
+    sa_algos = ['ddpg', 'ppo', 'sac', 'trpo', 'vpg', 'dqn']
+    ma_algos = ['maddpg']
     utils = ['plot', 'test_policy']
 
     assert len(sys.argv) > 1, 'Invalid command'
@@ -15,7 +16,10 @@ if __name__ == '__main__':
     if cmd in utils:
         runfile = osp.join(osp.abspath(osp.dirname(__file__)), 'common', cmd +'.py')
     else:
-        runfile = osp.join(osp.abspath(osp.dirname(__file__)), 'zoo/pg', cmd +'.py')
+        if cmd in sa_algos:
+            runfile = osp.join(osp.abspath(osp.dirname(__file__)), 'zoo/single', cmd +'.py')
+        elif cmd in ma_algos:
+            runfile = osp.join(osp.abspath(osp.dirname(__file__)), 'zoo/multi', cmd +'.py')
         if len(sys.argv) > 2 and sys.argv[2] == '-n':
             n_runs = int(sys.argv[3])
 

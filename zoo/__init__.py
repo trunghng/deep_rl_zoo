@@ -1,1 +1,1 @@
-from . import pg, dqn
+from . import single, multi

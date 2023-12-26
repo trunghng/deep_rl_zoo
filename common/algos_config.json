@@ -116,5 +116,55 @@
 			"epoch",
 			"total-env-interacts"
 		]
+	},
+	"dqn": {
+		"type": "off-policy",
+		"info-variants": [
+			"loss",
+			"values",
+			"average-values",
+			"std-values",
+			"max-values",
+			"min-values",
+			"average-episode-return",
+			"std-episode-return",
+			"max-episode-return",
+			"min-episode-return",
+			"episode-length",
+			"average-test-episode-return",
+			"std-test-episode-return",
+			"max-test-episode-return",
+			"min-test-episode-return",
+			"test-episode-length"
+		],
+		"time-variants": [
+			"epoch",
+			"total-env-interacts"
+		]
+	},
+	"maddpg": {
+		"type": "off-policy",
+		"info-variants": [
+			"mu-loss",
+			"q-loss",
+			"average-q-values",
+			"std-q-values",
+			"max-q-values",
+			"min-q-values",
+			"average-episode-return",
+			"std-episode-return",
+			"max-episode-return",
+			"min-episode-return",
+			"episode-length",
+			"average-test-episode-return",
+			"std-test-episode-return",
+			"max-test-episode-return",
+			"min-test-episode-return",
+			"test-episode-length"
+		],
+		"time-variants": [
+			"epoch",
+			"total-env-interacts"
+		]
 	}
 }

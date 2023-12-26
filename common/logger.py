@@ -3,13 +3,18 @@ Logging utilities, taken with adapted modification from OpenAI Spinning Up's git
 Ref:
 [1] https://github.com/openai/spinningup/blob/master/spinup/utils/logx.py
 '''
-import torch, numpy as np
-from gym.wrappers.monitoring import video_recorder
-import matplotlib.pyplot as plt
-import os.path as osp
 import time, atexit, os, json
+import os.path as osp
 from datetime import datetime as dt
 from collections import defaultdict
+from typing import Callable, Dict
+
+import gymnasium as gym
+from gymnasium.wrappers import RecordVideo
+import torch
+import numpy as np
+import matplotlib.pyplot as plt
+
 from common.mpi_utils import proc_rank, mpi_get_statistics, mpi_print
 from common.plot import plot
 
@@ -18,15 +23,12 @@ class Logger:
 
 
     def __init__(self,
-                log_dir=None,
-                log_fname='progress.txt',
-                exp_name=None):
-        '''
+                log_dir: str=None,
+                log_fname: str='progress.txt') -> None:
+        """
         :param log_dir: (str) Directory for saving experiment results
         :param log_fname: (str) File for saving experiment results
-        :param exp_name: (str) Experiment name
-        '''
-        self.exp_name = exp_name
+        """
         if proc_rank() == 0:
             self.log_dir = log_dir if log_dir else f'/tmp/experiments/{str(dt.now())}'
             if not osp.exists(self.log_dir):
@@ -44,13 +46,11 @@ class Logger:
         self.current_epoch_dict = dict()
 
 
-    def set_saver(self, what_to_save):
+    def set_saver(self, what_to_save) -> None:
         self.model = what_to_save
 
 
-    def save_config(self, config):
-        if self.exp_name is not None:
-            config['exp_name'] = self.exp_name
+    def save_config(self, config: Dict) -> None:
         if proc_rank() == 0:
             output = json.dumps(config, separators=(',',':\t'), indent=4)
             print('Experiment config:\n', output)
@@ -59,33 +59,40 @@ class Logger:
             self.config = config
 
 
-    def save_state(self, epoch=None, msg=False):
+    def save_state(self, epoch: int=None, msg: bool=False) -> None:
         if proc_rank() == 0:
-            ep_txt = f'-ep{epoch}' if epoch else ''
+            ep_txt = f'-ep{ep}' if epoch else ''
             fname = osp.join(self.log_dir, f'model{ep_txt}.pt')
-            torch.save(self.model, fname)
+            torch.save(self.model.state_dict(), fname)
             if msg:
                 print(f'Model is saved successfully at {fname}')
 
 
-    def render(self, env):
+    def render(self, action_sel: Callable) -> None:
+        """Render experiment result as a video
+
+        :param action_sel: action selection function
+        """
         if proc_rank() == 0:
-            fname = osp.join(self.log_dir, 'video.mp4')
-            vr = video_recorder.VideoRecorder(env, path=fname)
-            obs = env.reset()
+            if 'atari' in self.config and self.config['atari']:
+                env = make_atari_env(self.config['env'], render_mode='rgb_array')
+            else:
+                env = gym.make(self.config['env'], render_mode='rgb_array')
+            env = RecordVideo(env, video_folder=self.log_dir, disable_logger=True,\
+                video_length=self.config['max_ep_len'])
+            observation, _ = env.reset()
+            step = 0
             while True:
-                env.render()
-                time.sleep(1e-3)
-                vr.capture_frame()
-                action = self.model.act(obs)
-                obs, reward, terminated, _ = env.step(action)
-                if terminated:
+                action = action_sel(observation)
+                observation, reward, terminated, truncated, _ = env.step(action)
+
+                if terminated or truncated:
                     break
             env.close()
-            print(f'Video is renderred successfully at {fname}')
 
 
-    def plot(self):
+    def plot(self) -> None:
+        """Plot experiment results"""
         if proc_rank() == 0:
             plt.figure()
             fname = osp.join(self.log_dir, 'plot.png')
@@ -148,5 +155,6 @@ class Logger:
                     self.log_file.write("\t".join(self.current_epoch_dict.keys())+"\n")
                 self.log_file.write("\t".join(map(str, vals))+ "\n")
                 self.log_file.flush()
+        self.raw_epochs_dict.clear()
         self.current_epoch_dict.clear()
-        self.first_row=False
+        self.first_row = False
