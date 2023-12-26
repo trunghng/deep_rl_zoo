@@ -1,6 +1,6 @@
 
 # Deep RL Zoo
-A collection of Deep Reinforcement Learning algorithms' implementation, strongly based on OpenAI's [Spinning Up](https://github.com/openai/spinningup).  
+A collection of Deep Reinforcement Learning algorithms implemented with Pytorch, strongly based on OpenAI's [Spinning Up](https://github.com/openai/spinningup).  
 
 The collection is divided into two sets:
 - Single-agent methods:
