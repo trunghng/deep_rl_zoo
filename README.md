@@ -25,7 +25,7 @@ which is equivalent to
 ```bash
 python zoo/single/sac.py
 ```
-To customize training arguments, check out the each algorithm file for more detailed. For example, here are the arguments used in SAC
+To customize training arguments, check out each algorithm file for more detailed. For example, here are the arguments used in SAC
 ```
 usage: sac.py [-h] [--env ENV] [--exp-name EXP_NAME] [--seed SEED]
               [--hidden-sizes HIDDEN_SIZES [HIDDEN_SIZES ...]] [--lr LR]
