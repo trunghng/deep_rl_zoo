@@ -10,6 +10,12 @@ The collection is divided into two sets:
     - Consisting of [MADDPG](./zoo/multi/maddpg.py).
     - Training & testing environment: Multi Particle Environments ([MPE](https://pettingzoo.farama.org/environments/mpe/)) - [PettingZoo](https://pettingzoo.farama.org).
 
+## Setup
+The project is running on Python 3.11. To install dependencies, run the command
+```bash
+pip install -r requirements.txt
+```
+
 ## Running experiment
 To run an experiment, we can be run directly through `name_of_the_algorithm.py` or through `run.py`. For instance, to train an SAC agent, we run
 ```bash
