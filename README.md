@@ -132,7 +132,7 @@ optional arguments:
 
 ## Some results
 ![Total-env-interacts-perf](./some-results/total-env-interacts-performance.png)
-![SAC-HalfCheetah](./some-results/rl-video-episode-0.mp4)
+![SAC-HalfCheetah](./some-results/rl-video-episode-0.gif)
 
 ## References
 [1] Josh Achiam. [Spinning Up in Deep Reinforcement Learning](https://spinningup.openai.com/). SpinningUp2018, 2018.  
