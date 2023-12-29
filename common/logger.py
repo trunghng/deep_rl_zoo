@@ -68,10 +68,10 @@ class Logger:
                 print(f'Model is saved successfully at {fname}')
 
 
-    def render(self, action_sel: Callable) -> None:
+    def render(self, action_selection: Callable) -> None:
         """Render experiment result as a video
 
-        :param action_sel: action selection function
+        :param action_selection: action selection function
         """
         if proc_rank() == 0:
             if 'atari' in self.config and self.config['atari']:
@@ -83,7 +83,7 @@ class Logger:
             observation, _ = env.reset()
             step = 0
             while True:
-                action = action_sel(observation)
+                action = action_selection(observation)
                 observation, reward, terminated, truncated, _ = env.step(action)
 
                 if terminated or truncated:
@@ -96,7 +96,7 @@ class Logger:
         if proc_rank() == 0:
             plt.figure()
             fname = osp.join(self.log_dir, 'plot.png')
-            plot(self.epochs_dict, self.config['algo'])
+            plot(self.epochs_dict, self.config['algo'], smooth=7)
             plt.savefig(fname)
             plt.close()
             print(f'Plot is saved successfully at {fname}')

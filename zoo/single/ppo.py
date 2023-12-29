@@ -10,7 +10,7 @@ import numpy as np
 
 import common.mpi_utils as mpi
 from common.policy import CategoricalPolicy, DiagonalGaussianPolicy
-from common.vf import StateValueFunction, StateActionValueFunction
+from common.vf import StateValueFunction
 from common.utils import set_seed, to_tensor, dim
 from common.buffer import RolloutBuffer
 from common.logger import Logger
@@ -34,19 +34,7 @@ class ActorCritic(nn.Module):
         # discrete action space
         elif isinstance(action_space, Discrete):
             self.actor = CategoricalPolicy(obs_dim, action_dim, hidden_sizes, activation).to(device)
-
         self.critic = StateValueFunction(obs_dim, hidden_sizes, activation).to(device)
-        self.device = device
-
-
-    def step(self, observation: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        observation = to_tensor(observation, device=self.device)
-        with torch.no_grad():
-            pi = self.actor._distribution(observation)
-            action = pi.sample()
-            log_prob = self.actor._log_prob(pi, action)
-            value = self.critic(observation)
-        return action.cpu().numpy(), log_prob.cpu().numpy(), value.cpu().numpy()
 
 
 class PPO:
@@ -166,8 +154,16 @@ class PPO:
         })
 
 
-    def act(self, observation: np.ndarray) -> np.ndarray:
-        return self.ac.step(observation)[0]
+    def select_action(self, observation: np.ndarray, action_only: bool=True) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        observation = to_tensor(observation, device=self.device)
+        with torch.no_grad():
+            pi = self.ac.actor._distribution(observation)
+            action = pi.sample()
+            if action_only:
+                return action.cpu().numpy()
+            log_prob = self.ac.actor._log_prob(pi, action)
+            value = self.ac.critic(observation)
+        return action.cpu().numpy(), log_prob.cpu().numpy(), value.cpu().numpy()
 
 
     def load(self, model_path: str) -> None:
@@ -183,9 +179,9 @@ class PPO:
                 rewards = []
 
                 while True:
-                    action, log_prob, value = self.ac.step(observation)
+                    action, log_prob, value = self.select_action(observation, action_only=False)
                     next_observation, reward, terminated, truncated, _ = self.env.step(action)
-                    self.buffer.add(observation, action, reward, float(value), float(log_prob))
+                    self.buffer.add(observation, action, reward, value.item(), log_prob.item())
                     observation = next_observation
                     rewards.append(reward)
                     step += 1
@@ -199,7 +195,7 @@ class PPO:
                                 'episode-length': len(rewards)
                             })
                         else:
-                            _, _, value = self.ac.step(observation)
+                            _, _, value = self.select_action(observation, action_only=False)
                         self.buffer.finish_rollout(value)
                         break
             self.update_params()
@@ -218,7 +214,7 @@ class PPO:
                 self.logger.save_state()
         self.env.close()
         if self.render:
-            self.logger.render(self.act)
+            self.logger.render(self.select_action)
         if self.plot:
             self.logger.plot()
 

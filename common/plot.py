@@ -1,6 +1,8 @@
 import argparse, json, os, os.path as osp
 from statistics import mean
+from collections import defaultdict
 
+import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
@@ -16,14 +18,7 @@ def format_label(label):
     return ' '.join(label.split('-')).capitalize()
 
 
-def smooth(data, col: str, window: int=10):
-    for i in reversed(range(len(data[col]))):
-        start_idx = max(0, i - window + 1)
-        data[col][i] = mean(data[col][start_idx: i+1])
-    return data
-
-
-def plot(data, algo=None, x_axis='total-env-interacts', y_axis='performance', group=None):
+def plot(data, algo=None, x_axis='total-env-interacts', y_axis='performance', group=None, smooth=1):
     if algo is not None:
         algo = algos_config[algo]
         assert x_axis in algo['time-variants'], f"Available choices for x-axis are {algo['time-variants']}"
@@ -35,9 +30,26 @@ def plot(data, algo=None, x_axis='total-env-interacts', y_axis='performance', gr
         else:
             assert y_axis in algo['info-variants'], f"Available choices for y-axis are {algo['info-variants']}"
 
+    if isinstance(data, defaultdict):
+        data = [pd.DataFrame.from_dict(data)]
+
+    """
+    smooth data with moving window average.
+        that is,
+            smoothed_y[t] = average(y[t-k], y[t-k+1], ..., y[t+k-1], y[t+k])
+        where the "smooth" param is width of that window (2k+1)
+    """
+    if smooth > 1:
+        smooth = len(data[0][y_axis]) if len(data[0][y_axis]) < smooth else smooth
+        y = np.ones(smooth)
+        for datum in data:
+            x = np.asarray(datum[y_axis])
+            z = np.ones(len(x))
+            smoothed_x = np.convolve(x,y,'same') / np.convolve(z,y,'same')
+            datum[y_axis] = smoothed_x
+
     if isinstance(data, list):
         data = pd.concat(data, ignore_index=True)
-    data = smooth(data, y_axis)
 
     sns.set()
     sns.lineplot(data=data, x=x_axis, y=y_axis, hue=group, errorbar='sd')
@@ -82,11 +94,11 @@ def make_plots(log_dirs, x_axes, y_axes, savedir=None):
     for x_axis in x_axes:
         for y_axis in y_axes:
             plt.figure()
-            plot(datasets, x_axis=x_axis, y_axis=y_axis, group='exp_name')
+            plot(datasets, x_axis=x_axis, y_axis=y_axis, group='exp_name', smooth=7)
             if savedir is not None:
                 savepath = osp.join(savedir, f'{x_axis}-{y_axis}.png')
                 plt.savefig(savepath)
-                print(f'Plotting result is saved at {savepath}.')
+                print(f'Plotting result is saved at {osp.abspath(savepath)}.')
             else:
                 plt.show()
     plt.close()

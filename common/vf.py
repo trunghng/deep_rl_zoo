@@ -2,6 +2,7 @@ from typing import List
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from common.network import *
 
@@ -35,9 +36,13 @@ class StateActionValueFunction(ValueFunction):
                 activation: nn.Module) -> None:
         super().__init__()
         self.value_network = MLP([obs_dim + action_dim, *hidden_sizes, 1], activation)
+        self.action_dim = action_dim
 
 
     def forward(self, observation: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+        if len(action.shape) == 2 and action.shape[1] == 1:
+            action = torch.squeeze(action, 1) 
+        action = F.one_hot(action.to(torch.int64), num_classes=self.action_dim)
         obs_action = torch.cat([observation, action], dim=-1)
         return self.value_network(obs_action)
 

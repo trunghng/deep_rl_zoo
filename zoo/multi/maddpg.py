@@ -8,69 +8,46 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.optim import Adam
+import torch.nn.functional as F
+from torch.distributions import Categorical, Gumbel
 
-from common.policy import DeterministicPolicy, MADDPGPolicy
+from common.policy import DeterministicPolicy, DiscretePolicy
 from common.vf import MADDPGStateActionValueFunction
 from common.utils import dim, make_mpe_env, set_seed, to_tensor, split_obs_action, soft_update
 from common.buffer import ReplayBuffer
 from common.logger import Logger
 
 
-class GumbelSoftmax(nn.Module):
-    """Gumbel-Softmax activation function"""
-
-    def forward(self, x):
-        return nn.functional.gumbel_softmax(x)
-
-
 class ActorCritic(nn.Module):
 
 
     def __init__(self,
-                agent_id: str,
+                agent: str,
                 obs_space_dict: Dict[str, Space],
                 action_space_dict: Dict[str, Space],
                 hidden_sizes: List[int]=[64, 64],
                 activation=nn.ReLU,
                 device: str='cpu') -> None:
         super().__init__()
-        self.obs_dim = dim(obs_space_dict[agent_id])
+        obs_dim = dim(obs_space_dict[agent])
         obs_dims = list(map(lambda aid: dim(obs_space_dict[aid]), obs_space_dict))
-        self.action_dim = dim(action_space_dict[agent_id])
+        action_dim = dim(action_space_dict[agent])
         action_dims = list(map(lambda aid: dim(action_space_dict[aid]), action_space_dict))
 
-        action_space = action_space_dict[agent_id]
+        action_space = action_space_dict[agent]
         # continuous action
         if isinstance(action_space, Box):
-            self.action_limit = action_space.high[0]
-            self.mu = DeterministicPolicy(self.obs_dim, self.action_dim, hidden_sizes, 
-                            activation, nn.Sigmoid, self.action_limit).to(device)
-            self.mu_target = DeterministicPolicy(self.obs_dim, self.action_dim, hidden_sizes, 
-                            activation, nn.Sigmoid, self.action_limit).to(device)
-            for p in self.mu_target.parameters():
-                p.requires_grad = False
+            action_limit = action_space.high[0]
+            self.mu = DeterministicPolicy(obs_dim, action_dim, hidden_sizes, 
+                            activation, nn.Sigmoid, action_limit).to(device)
         # discrete action
         elif isinstance(action_space, Discrete):
-            self.mu = MADDPGPolicy(self.obs_dim, self.action_dim, hidden_sizes, 
-                        activation, GumbelSoftmax).to(device)
-            self.mu_target = deepcopy(self.mu)
+            self.mu = DiscretePolicy(obs_dim, action_dim, hidden_sizes, activation, nn.Indentiy).to(device)
+        self.mu_target = deepcopy(self.mu)
+        for p in self.mu_target.parameters():
+            p.requires_grad = False
         self.q = MADDPGStateActionValueFunction(obs_dims, action_dims, 
                     hidden_sizes, activation).to(device)
-        self.device = device
-
-
-    def step(self, observation: torch.Tensor, noise_sigma: float) -> np.ndarray:
-        observation = to_tensor(observation, self.device)
-        with torch.no_grad():
-            try:
-                epsilon = noise_sigma * np.random.randn(self.action_dim)
-                action = self.mu(observation).cpu().numpy() + epsilon
-                action = np.clip(action, 0, self.action_limit, dtype=np.float32)
-            except AttributeError:
-                epsilon = -np.log(-np.log(np.random.rand(1)))
-                pass
-                print('Discrete action space')
-        return action
 
 
 class MADDPG:
@@ -80,15 +57,17 @@ class MADDPG:
         set_seed(args.seed)
         self.env = make_mpe_env(args.env, continuous_actions=True)
         self.env.reset()
-        self.agents = []
+        self.ac, self.mu_opt, self.q_opt, self.obs_dim, self.action_dim, self.is_continuous\
+            = dict(), dict(), dict(), dict(), dict(), dict()
         self.device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
-        for agent_id in self.env.agents:
-            agent = dict()
-            agent['ac'] = ActorCritic(agent_id, self.env.observation_spaces, 
-                                            self.env.action_spaces, args.hidden_size, device=self.device)
-            agent['mu_opt'] = Adam(agent['ac'].mu.parameters(), lr=args.lr)
-            agent['q_opt'] = Adam(agent['ac'].q.parameters(), lr=args.lr)
-            self.agents.append(agent)
+        for agent in self.env.agents:
+            self.ac[agent] = ActorCritic(agent, self.env.observation_spaces, 
+                                    self.env.action_spaces, args.hidden_sizes, device=self.device)
+            self.mu_opt[agent] = Adam(self.ac[agent].mu.parameters(), lr=args.lr)
+            self.q_opt[agent] = Adam(self.ac[agent].q.parameters(), lr=args.lr)
+            self.obs_dim[agent] = dim(self.env.observation_spaces[agent])
+            self.action_dim[agent] = dim(self.env.action_spaces[agent])
+            self.is_continuous[agent] = isinstance(self.env.action_spaces[agent], Box)
 
         self.epochs = args.epochs
         self.steps_per_epoch = args.steps_per_epoch
@@ -113,7 +92,7 @@ class MADDPG:
         config_dict = vars(args)
         config_dict['algo'] = 'maddpg'
         self.logger.save_config(config_dict)
-        self.logger.set_saver(list(map(lambda agent: agent['ac'], self.agents)))
+        self.logger.set_saver(list(map(lambda agent: self.ac[agent], self.ac)))
 
 
     def get_info(self, env) -> Tuple[np.ndarray, List[np.ndarray], List[bool], List[bool]]:
@@ -130,14 +109,11 @@ class MADDPG:
         mu_losses, q_losses, q_values_ = [], [], []
 
         for i, agent in enumerate(self.env.agents):
-            # (B x joint_O), (B x joint_A), (B x N), (B x joint_O), (B x N)
-            observations, actions, rewards, next_observations, terminations \
-                = map(lambda x: x.to(self.device), self.buffer.get(self.batch_size))
 
             def compute_targets(observations, rewards, next_observations, terminations):
                 """Compute TD targets y for Q functions"""
                 # O_1, ..., O_N
-                obs_dims = list(map(lambda agent: agent['ac'].obs_dim, self.agents))
+                obs_dims = [self.obs_dim[agent_] for agent_ in self.obs_dim]
                 observations_ = split_obs_action(observations, obs_dims) # (B x O_1), ..., (B x O_N)
 
                 '''
@@ -145,51 +121,55 @@ class MADDPG:
                     a_k' = (mu_target)_k(o_k)
                 (B x A_1), ..., (B x A_N)
                 '''
-                next_actions = list(map(lambda agent, obs: agent['ac'].mu_target(obs), self.agents, observations_))
+                next_actions = [self.ac[agent_].mu_target(obs) for agent_, obs in zip(self.ac, observations_)]
                 next_actions = torch.cat(next_actions, dim=1) # (B x joint_A)
 
                 # Q_i(o_1', ..., o_N', a_1', ..., a_N')
-                Q_target_values = self.agents[i]['ac'].q(next_observations, next_actions) # (B x 1)
+                q_target_values = self.ac[agent].q(next_observations, next_actions) # (B x 1)
 
                 '''
                 Compute targets:
                     y = r_i + gamma * (1 - d_i) * Q_i(o_1', ..., o_N', a_1', ..., a_N')
                 '''
                 y = rewards[:, i].view(self.batch_size, 1) + self.gamma * \
-                        (1 - terminations[:, i].view(self.batch_size, 1)) * Q_target_values # (B x 1)
+                        (1 - terminations[:, i].view(self.batch_size, 1)) * q_target_values # (B x 1)
                 return y
 
             def compute_critic_loss(observations, actions, rewards, next_observations, terminations):
                 """Compute critic loss"""
                 y = compute_targets(observations, rewards, next_observations, terminations) # (B x 1)
-                q_values = self.agents[i]['ac'].q(observations, actions) # (B x 1)
+                q_values = self.ac[agent].q(observations, actions) # (B x 1)
                 q_loss = ((y - q_values) ** 2).mean() # (1,)
                 return q_loss, q_values
 
             def compute_actor_loss(observations, actions):
                 """Compute actor loss"""
                 # O_1, ..., O_N
-                obs_dims = list(map(lambda agent: agent['ac'].obs_dim, self.agents))
+                obs_dims = [self.obs_dim[agent_] for agent_ in self.obs_dim]
                 observation = split_obs_action(observations, obs_dims)[i] # (B x O_i)
 
                 # A_1, ..., A_N
-                action_dims = list(map(lambda agent: agent['ac'].action_dim, self.agents))
+                action_dims = [self.action_dim[agent_] for agent_ in self.action_dim]
                 actions_ = list(split_obs_action(actions, action_dims)) # (B x A_1), ..., (B x A_N)
-                actions_[i] = self.agents[i]['ac'].mu(observation).float() # (B x A_i)
+                actions_[i] = self.ac[agent].mu(observation).float() # (B x A_i)
                 actions_ = torch.cat(actions_, dim=1) # (B x joint_A)
 
-                mu_loss = -self.agents[i]['ac'].q(observations, actions_).mean() # (1,)
+                mu_loss = -self.ac[agent].q(observations, actions_).mean() # (1,)
                 return mu_loss
+
+            # (B x joint_O), (B x joint_A), (B x N), (B x joint_O), (B x N)
+            observations, actions, rewards, next_observations, terminations \
+                = map(lambda x: x.to(self.device), self.buffer.get(self.batch_size))
                 
-            self.agents[i]['q_opt'].zero_grad()
+            self.q_opt[agent].zero_grad()
             q_loss, q_values = compute_critic_loss(observations, actions, rewards, next_observations, terminations)
             q_loss.backward()
-            self.agents[i]['q_opt'].step()
+            self.q_opt[agent].step()
 
-            self.agents[i]['mu_opt'].zero_grad()
+            self.mu_opt[agent].zero_grad()
             mu_loss = compute_actor_loss(observations, actions)
             mu_loss.backward()
-            self.agents[i]['mu_opt'].step()
+            self.mu_opt[agent].step()
 
             q_losses.append(q_loss.item())
             q_values_.append(q_values.detach().cpu().numpy())
@@ -204,15 +184,26 @@ class MADDPG:
 
     def update_target_params(self) -> None:
         """Update target network's parameters"""
-        for i in range(self.env.num_agents):
-            soft_update(self.agents[i]['ac'].mu, self.agents[i]['ac'].mu_target, self.tau)
+        for agent in self.env.agents:
+            soft_update(self.ac[agent].mu, self.ac[agent].mu_target, self.tau)
 
 
-    def act(self, i: int) -> np.ndarray:
+    def select_action(self, agent: str, observation: torch.Tensor, noise_sigma: float=0.0) -> np.ndarray:
         """
-        :param i: agent index
+        :param agent: agent ID
+        :param observation: current observation
+        :param noise_sigma: Standard deviation of mean-zero Gaussian noise for exploration
         """
-        return self.agents[i]['ac'].step(self.env.observe(agent), 0)
+        observation = to_tensor(observation, self.device)
+        with torch.no_grad():
+            if isinstance(self.env.action_space(agent), Box):
+                epsilon = noise_sigma * np.random.randn(self.action_dim[agent])
+                action = self.ac[agent].mu(observation).cpu().numpy() + epsilon
+                action = np.clip(action, self.env.action_space(agent).low, 
+                            self.env.action_space(agent).high, dtype=np.float32)
+            elif isinstance(self.env.action_space(agent), Discrete):
+                pass
+        return action
 
 
     def test(self) -> None:
@@ -222,9 +213,9 @@ class MADDPG:
             total_rewards = []
 
             while True:
-                for i, agent in enumerate(env.agents):
+                for agent in env.agents:
                     observation = env.observe(agent)
-                    action = self.agents[i]['ac'].step(observation, 0)
+                    action = self.select_action(agent, observation)
                     env.step(action)
 
                 _, rewards, terminations, truncations = self.get_info(env)
@@ -248,9 +239,9 @@ class MADDPG:
 
                 while True:
                     actions = []
-                    for i, agent in enumerate(self.env.agents):
+                    for agent in self.env.agents:
                         observations = self.env.state()
-                        action = self.agents[i]['ac'].step(self.env.observe(agent), self.sigma)
+                        action = self.select_action(agent, self.env.observe(agent), self.sigma)
                         self.env.step(action)
                         actions.append(action)
                     actions = np.concatenate(actions)
@@ -293,7 +284,7 @@ class MADDPG:
 
         self.env.close()
         if self.render:
-            self.logger.render(self.act)
+            self.logger.render(self.selection_action)
         if self.plot:
             self.logger.plot()
 

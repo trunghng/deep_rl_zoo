@@ -12,7 +12,7 @@ import torch.nn.functional as F
 import torch.optim as opt
 
 from common.vf import MLPDeepQNet, CNNDeepQNet, MLPDuelingQNet
-from common.utils import set_seed, make_atari_env, soft_update, hard_update, dim
+from common.utils import set_seed, make_atari_env, soft_update, hard_update, dim, to_tensor
 from common.buffer import ReplayBuffer
 from common.logger import Logger
 
@@ -48,7 +48,7 @@ class DQN:
     :param plot: (bool) Whether to plot the training statistics.
     """
 
-    def __init__(self, args):
+    def __init__(self, args) -> None:
         self.env = make_atari_env(args.env) if args.atari else gym.make(args.env)
         obs_dim = dim(self.env.observation_space)
         action_dim = dim(self.env.action_space)
@@ -113,17 +113,7 @@ class DQN:
                 * np.exp(-1. * ep / self.epsilon_decay)
 
 
-    def store_transition(self,
-                        observation: np.ndarray,
-                        action: int,
-                        reward: float,
-                        next_observation: np.ndarray,
-                        terminated: bool) -> None:
-        """Store transition into the replay buffer"""
-        self.buffer.add(observation, action, reward, next_observation, terminated)
-
-
-    def act(self, observation: np.ndarray, epsilon: float=0.0) -> int:
+    def select_action(self, observation: np.ndarray, epsilon: float=0.0) -> int:
         """
         Select action according to the behavior policy
             here we use epsilon-greedy as behavior policy
@@ -131,7 +121,7 @@ class DQN:
         if random.random() <= epsilon:
             action = self.env.action_space.sample()
         else:
-            observation = torch.tensor(np.array(observation))[None, ...].to(self.device)
+            observation = to_tensor(observation, self.device)
             with torch.no_grad():
                 action_values = self.Qnet(observation.float())
             action = torch.argmax(action_values).item()
@@ -165,7 +155,6 @@ class DQN:
             soft_update(self.Qnet, self.Qnet_target, self.tau)
         else:
             hard_update(self.Qnet, self.Qnet_target)
-        
 
 
     def learn(self) -> None:
@@ -203,7 +192,7 @@ class DQN:
             observation, _ = env.reset()
             rewards = []
             while True:
-                action = self.act(observation)
+                action = self.select_action(observation)
                 observation, reward, terminated, truncated, _ = env.step(action)
                 rewards.append(reward)
 
@@ -227,14 +216,11 @@ class DQN:
                 rewards = []
 
                 while True:
-                    action = self.act(observation, epsilon)
+                    action = self.select_action(observation, epsilon)
                     next_observation, reward, terminated, truncated, _ = self.env.step(action)
                     rewards.append(reward)
-                    
-                    # Set `terminated` to `False` in case episode is forced to stopped by the env
-                    terminated = False if len(rewards) == self.max_ep_len else terminated
 
-                    self.store_transition(observation, action, reward, next_observation, terminated)
+                    self.buffer.add(observation, action, reward, next_observation, terminated)
                     self.learn()
                     observation = next_observation
 
@@ -263,7 +249,7 @@ class DQN:
                     break
         self.env.close()
         if self.render:
-            self.logger.render(self.act)
+            self.logger.render(self.select_action)
         if self.plot:
             self.logger.plot()
 

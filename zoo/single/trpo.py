@@ -37,19 +37,7 @@ class ActorCritic(nn.Module):
         # discrete action space
         elif isinstance(action_space, Discrete):
             self.actor = CategoricalPolicy(obs_dim, action_dim, hidden_sizes, activation).to(device)
-
         self.critic = StateValueFunction(obs_dim, hidden_sizes, activation).to(device)
-        self.device = device
-
-
-    def step(self, observation: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        observation = to_tensor(observation, device=self.device)
-        with torch.no_grad():
-            pi = self.actor._distribution(observation)
-            action = pi.sample()
-            log_prob = self.actor._log_prob(pi, action)
-            value = self.critic(observation)
-        return action.cpu().numpy(), log_prob.cpu().numpy(), value.cpu().numpy()
 
 
 class TRPO:
@@ -81,7 +69,7 @@ class TRPO:
     :param plot: (bool) Whether to plot the statistics.
     """
 
-    def __init__(self, args):
+    def __init__(self, args) -> None:
         self.env = gym.make(args.env)
         set_seed(args.seed + 10 * mpi.proc_rank())
         observation_space = self.env.observation_space
@@ -237,8 +225,16 @@ class TRPO:
         })
 
 
-    def act(self, observation: np.ndarray) -> np.ndarray:
-        return self.ac.step(observation)[0]
+    def select_action(self, observation: np.ndarray, action_only=True) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        observation = to_tensor(observation, device=self.device)
+        with torch.no_grad():
+            pi = self.ac.actor._distribution(observation)
+            action = pi.sample()
+            if action_only:
+                return action.cpu().numpy()
+            log_prob = self.ac.actor._log_prob(pi, action)
+            value = self.ac.critic(observation)
+        return action.cpu().numpy(), log_prob.cpu().numpy(), value.cpu().numpy()
 
 
     def load(self, model_path: str) -> None:
@@ -254,9 +250,9 @@ class TRPO:
                 rewards = []
 
                 while True:
-                    action, log_prob, value = self.ac.step(observation)
+                    action, log_prob, value = self.select_action(observation, action_only=False)
                     next_observation, reward, terminated, truncated, _ = self.env.step(action)
-                    self.buffer.add(observation, action, reward, float(value), float(log_prob))
+                    self.buffer.add(observation, action, reward, value.item(), log_prob.item())
                     observation = next_observation
                     rewards.append(reward)
                     step += 1
@@ -270,7 +266,7 @@ class TRPO:
                                 'episode-length': len(rewards)
                             })
                         else:
-                            _, _, value = self.ac.step(observation)
+                            _, _, value = self.select_action(observation, action_only=False)
                         self.buffer.finish_rollout(value)
                         break
             self.update_params()            
@@ -289,7 +285,7 @@ class TRPO:
                 self.logger.save_state()
         self.env.close()
         if self.render:
-            self.logger.render(self.act)
+            self.logger.render(self.select_action)
         if self.plot:
             self.logger.plot()
 

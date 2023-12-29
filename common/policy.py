@@ -193,8 +193,8 @@ class SoftPolicy(Policy):
         return a, logp_a
 
 
-class MADDPGPolicy(Policy):
-    """Multi-agent DDPG policy"""
+class DiscretePolicy(Policy):
+    """Policy used for discrete action space"""
 
     def __init__(self,
                 obs_dim: int,
@@ -203,9 +203,8 @@ class MADDPGPolicy(Policy):
                 activation: nn.Module,
                 output_activation: nn.Module) -> None:
         super().__init__()
-        self.network = MLP([obs_dim, *hidden_sizes, action_dim], activation, output_activation)
+        self.logits = MLP([obs_dim, *hidden_sizes, action_dim], activation, output_activation)
 
 
     def forward(self, observation: torch.Tensor) -> torch.Tensor:
-        return self.network(observation)
-
+        return self.logits(observation)

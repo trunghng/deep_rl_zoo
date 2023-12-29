@@ -19,7 +19,6 @@ from common.logger import Logger
 
 class ActorCritic(nn.Module):
 
-
     def __init__(self,
                 observation_space: Space,
                 action_space: Space,
@@ -33,14 +32,6 @@ class ActorCritic(nn.Module):
         self.pi = SoftPolicy(obs_dim, action_dim, hidden_sizes, activation, action_limit).to(device)
         self.q1 = StateActionValueFunction(obs_dim, action_dim, hidden_sizes, activation).to(device)
         self.q2 = deepcopy(self.q1)
-        self.device = device
-
-
-    def step(self, observation: np.ndarray, deterministic: bool=False) -> np.ndarray:
-        observation = to_tensor(observation, self.device)
-        with torch.no_grad():
-            action, _ = self.pi(observation, deterministic, need_logprob=False)
-        return action.cpu().numpy()
 
 
 class SAC:
@@ -195,8 +186,11 @@ class SAC:
         })
 
 
-    def act(self, observation: np.ndarray) -> np.ndarray:
-        return self.ac.step(observation)
+    def select_action(self, observation: np.ndarray, deterministic: bool=True) -> np.ndarray:
+        observation = to_tensor(observation, self.device)
+        with torch.no_grad():
+            action, _ = self.ac.pi(observation, deterministic, need_logprob=False)
+        return action.cpu().numpy()
 
 
     def load(self, model_path: str) -> None:
@@ -210,7 +204,7 @@ class SAC:
             observation, _ = env.reset()
             rewards = []
             while True:
-                action = self.ac.step(observation)
+                action = self.select_action(observation)
                 observation, reward, terminated, truncated, _ = env.step(action)
                 rewards.append(reward)
 
@@ -235,7 +229,7 @@ class SAC:
                         # SpinniningUP's trick to ultilize exploration at the beginning
                         action = self.env.action_space.sample()
                     else:
-                        action = self.ac.step(observation)
+                        action = self.select_action(observation, deterministic=False)
                     next_observation, reward, terminated, _, _ = self.env.step(action)
 
                     rewards.append(reward)
@@ -279,7 +273,7 @@ class SAC:
                     break
         self.env.close()
         if self.render:
-            self.logger.render(self.act)
+            self.logger.render(self.select_action)
         if self.plot:
             self.logger.plot()
 

@@ -3,6 +3,7 @@ import os.path as osp
 from types import SimpleNamespace
 
 import gymnasium as gym
+from gymnasium.wrappers import RecordVideo
 import torch
 
 from common.mpi_utils import mpi_get_statistics
@@ -18,7 +19,7 @@ from zoo.single.vpg import VPG
 def test(args) -> None:
     log_dir, eps, max_ep_len, render = args.log_dir, args.eps, args.max_ep_len, args.render
 
-    with open(osp.join(args.log_dir, 'config.json')) as f:
+    with open(osp.join(log_dir, 'config.json')) as f:
         config = json.load(f, object_hook=lambda d: SimpleNamespace(**d))
 
     algos = {
@@ -27,10 +28,13 @@ def test(args) -> None:
         'trpo': TRPO, 'vpg': VPG
     }
     model = algos[config.algo](config)
+    model.load(osp.join(log_dir, 'model.pt'))
+    render_mode = 'human' if render else None
+
     if hasattr(config, 'atari') and config.atari:
-        env = make_atari_env(config.env, render_mode='human')
+        env = make_atari_env(config.env, render_mode=render_mode)
     else:
-        env = gym.make(config.env, render_mode='human')
+        env = gym.make(config.env, render_mode=render_mode)
     returns, eps_len = [], []
 
     for ep in range(1, eps + 1):
@@ -38,7 +42,7 @@ def test(args) -> None:
         rewards, step = [], 0
 
         while True:
-            action = model.act(obs)
+            action = model.select_action(obs)
             obs, reward, terminated, truncated, _ = env.step(action)
             rewards.append(reward)
             step += 1

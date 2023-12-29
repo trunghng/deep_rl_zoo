@@ -33,7 +33,7 @@
 	"ddpg": {
 		"type": "off-policy",
 		"info-variants": [
-			"pi-loss",
+			"mu-loss",
 			"q-loss",
 			"average-q-values",
 			"std-q-values",
