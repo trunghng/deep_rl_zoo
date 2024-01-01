@@ -40,9 +40,14 @@ class StateActionValueFunction(ValueFunction):
 
 
     def forward(self, observation: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
-        if len(action.shape) == 2 and action.shape[1] == 1:
-            action = torch.squeeze(action, 1) 
-        action = F.one_hot(action.to(torch.int64), num_classes=self.action_dim)
+        # one-hot action (discrete case)
+        # if len(action.shape) == 2 and action.shape[1] == 1:
+        #     action = torch.squeeze(action, 1)
+        # action = F.one_hot(action.to(torch.int64), num_classes=self.action_dim)
+
+        # normal action (1 dim) (discrete case) 
+        if len(action.shape) == 1:
+            action = torch.unsqueeze(action, 1)
         obs_action = torch.cat([observation, action], dim=-1)
         return self.value_network(obs_action)
 

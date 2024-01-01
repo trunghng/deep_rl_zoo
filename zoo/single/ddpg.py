@@ -37,12 +37,13 @@ class ActorCritic(nn.Module):
             action_limit = action_space.high[0]
             self.actor = DeterministicPolicy(obs_dim, action_dim, hidden_sizes, 
                             activation, nn.Tanh, action_limit).to(device)
+            self.critic = StateActionValueFunction(obs_dim, action_dim, hidden_sizes, 
+                            activation).to(device)
         # discrete action space
         elif isinstance(action_space, Discrete):
             self.actor = DiscretePolicy(obs_dim, action_dim, hidden_sizes, 
                             activation, nn.Identity).to(device)
-        self.critic = StateActionValueFunction(obs_dim, action_dim, hidden_sizes, 
-                            activation).to(device)
+            self.critic = StateActionValueFunction(obs_dim, 1, hidden_sizes, activation).to(device)
 
 
 class DDPG:
@@ -166,9 +167,8 @@ class DDPG:
                 logits_target = self.ac_target.actor(next_observations)
                 actions_target_dist = Categorical(logits=logits_target)
                 actions_target = actions_target_dist.sample()
-                y = rewards + self.gamma * (1 - terminated) \
-                    * self.ac_target.critic(next_observations, actions_target)
-            return y
+            return rewards + self.gamma * (1 - terminated) \
+                * self.ac_target.critic(next_observations, actions_target)
 
         def compute_q_loss(observations, actions, targets):
             q_values = self.ac.critic(observations, actions)
@@ -227,7 +227,7 @@ class DDPG:
             observation, _ = env.reset()
             rewards = []
             while True:
-                action = self.select_action(observation, noise_sigma=0)
+                action = self.select_action(observation)
                 observation, reward, terminated, truncated, _ = env.step(action)
                 rewards.append(reward)
 
