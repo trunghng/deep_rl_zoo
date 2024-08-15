@@ -47,7 +47,7 @@ opt-einsum==3.3.0
 packaging==23.2
 pandas==2.1.4
 pettingzoo==1.24.2
-Pillow==10.1.0
+Pillow==10.3.0
 proglog==0.1.10
 pycparser==2.21
 pygame==2.3.0
