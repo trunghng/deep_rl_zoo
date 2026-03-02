@@ -28,7 +28,7 @@ def test(args) -> None:
         'trpo': TRPO, 'vpg': VPG
     }
     model = algos[config.algo](config)
-    model.load(osp.join(log_dir, 'model.pt'))
+    model.load(osp.join(log_dir, 'latest.pt'))
     render_mode = 'human' if render else None
 
     if hasattr(config, 'atari') and config.atari:

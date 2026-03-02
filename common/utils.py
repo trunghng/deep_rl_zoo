@@ -65,12 +65,15 @@ def hard_update(network, target_network) -> None:
 
 def dim(space: Space) -> int:
     """Return dimensionality of the space"""
+    if hasattr(space, 'single_observation_space'):
+        return dim(space.single_observation_space)
+
     if isinstance(space, Box):
-        return space.shape[0]
+        return np.prod(space.shape)
     elif isinstance(space, Discrete):
         return space.n
     else:
-        pass
+        raise NotImplementedError(f"Unknown space type: {type(space)}")
 
 
 def make_atari_env(env: str, render_mode: str=None) -> gym.Env:

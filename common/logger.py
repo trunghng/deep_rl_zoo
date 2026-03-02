@@ -14,6 +14,7 @@ from gymnasium.wrappers import RecordVideo
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
+import wandb
 
 from common.mpi_utils import proc_rank, mpi_get_statistics, mpi_print
 from common.plot import plot
@@ -24,31 +25,40 @@ class Logger:
 
     def __init__(self,
                 log_dir: str=None,
-                log_fname: str='progress.txt') -> None:
-        """
-        :param log_dir: (str) Directory for saving experiment results
-        :param log_fname: (str) File for saving experiment results
-        """
+                log_fname: str='progress.txt',
+                config=None) -> None:
+        self.config = config or {}
+        self.use_wandb = config.get('use_wandb', False)
+        self.wandb_id = config.get('wandb_id', None)
         if proc_rank() == 0:
             self.log_dir = log_dir if log_dir else f'/tmp/experiments/{str(dt.now())}'
             if not osp.exists(self.log_dir):
                 os.makedirs(self.log_dir)
-            self.log_file = open(osp.join(self.log_dir, log_fname), 'w')
-            atexit.register(self.log_file.close)
+
+            self.log_path = osp.join(self.log_dir, log_fname)
+            exists = osp.exists(self.log_path) and osp.getsize(self.log_path) > 0
+            self.log_file = open(self.log_path, 'a')
+            self.first_row = not exists
+
+            if self.use_wandb:
+                wandb.init(
+                    project='drl_zoo',
+                    id=self.wandb_id,
+                    resume='allow',
+                    config=self.config,
+                    name=self.config.get('exp_name', None),
+                    monitor_gym=True,
+                    save_code=True
+                )
         else:
             self.log_dir = None
             self.log_file = None
-        self.first_row = True
+            self.first_row = True
         # dict for saving raw data collected over epochs 
         self.raw_epochs_dict = defaultdict(list)
         # dict for saving processed data (mean, std, max, min) collected over epochs
         self.epochs_dict = defaultdict(list)
         self.current_epoch_dict = dict()
-
-
-    def set_saver(self, what_to_save) -> None:
-        self.model = what_to_save
-
 
     def save_config(self, config: Dict) -> None:
         if proc_rank() == 0:
@@ -58,30 +68,33 @@ class Logger:
                 out.write(output)
             self.config = config
 
-
-    def save_state(self, epoch: int=None, msg: bool=False) -> None:
+    def save_state(self, state_dict, epoch: int) -> None:
         if proc_rank() == 0:
-            ep_txt = f'-ep{ep}' if epoch else ''
-            fname = osp.join(self.log_dir, f'model{ep_txt}.pt')
-            torch.save(self.model.state_dict(), fname)
-            if msg:
-                print(f'Model is saved successfully at {fname}')
+            torch.save(state_dict, osp.join(self.log_dir, f'checkpoint_ep{epoch}.pt'))
 
+    def save_latest(self, state_dict):
+        if proc_rank() == 0:
+            torch.save(state_dict, osp.join(self.log_dir, 'latest.pt'))
 
-    def render(self, action_selection: Callable) -> None:
-        """Render experiment result as a video
-
+    def render(self, action_selection: Callable, video: bool = True) -> None:
+        """Render experiment result as a video or live human view
+        
         :param action_selection: action selection function
+        :param video: If True, saves an mp4. If False, renders to the screen
         """
         if proc_rank() == 0:
+            render_mode = 'rgb_array' if video else 'human'
+            
             if 'atari' in self.config and self.config['atari']:
-                env = make_atari_env(self.config['env'], render_mode='rgb_array')
+                env = make_atari_env(self.config['env'], render_mode=render_mode)
             else:
-                env = gym.make(self.config['env'], render_mode='rgb_array')
-            env = RecordVideo(env, video_folder=self.log_dir, disable_logger=True,\
-                video_length=self.config['max_ep_len'])
+                env = gym.make(self.config['env'], render_mode=render_mode)
+            
+            if video:
+                env = RecordVideo(env, video_folder=self.log_dir, disable_logger=True,
+                                  video_length=self.config['max_ep_len'])
+            
             observation, _ = env.reset()
-            step = 0
             while True:
                 action = action_selection(observation)
                 observation, reward, terminated, truncated, _ = env.step(action)
@@ -89,7 +102,6 @@ class Logger:
                 if terminated or truncated:
                     break
             env.close()
-
 
     def plot(self) -> None:
         """Plot experiment results"""
@@ -101,11 +113,9 @@ class Logger:
             plt.close()
             print(f'Plot is saved successfully at {fname}')
 
-
     def add(self, data):
         for key, value in data.items():
             self.raw_epochs_dict[key].append(value)
-
 
     def log_epoch(self, key, value=None, average_only=False, need_optima=False):
         if value is None:
@@ -130,10 +140,8 @@ class Logger:
             self.current_epoch_dict[key] = value
             self.epochs_dict[key].append(value)
 
-
     def log(self, msg):
         mpi_print(msg)
-
 
     def dump_epoch(self):
         if proc_rank()==0:
@@ -155,6 +163,50 @@ class Logger:
                     self.log_file.write("\t".join(self.current_epoch_dict.keys())+"\n")
                 self.log_file.write("\t".join(map(str, vals))+ "\n")
                 self.log_file.flush()
+
+            if self.use_wandb:
+                wandb_logs = {}
+                for key, val in self.current_epoch_dict.items():
+                    if isinstance(val, (int, float, np.number)):
+                        wandb_logs[key] = val
+                wandb.log(wandb_logs)
         self.raw_epochs_dict.clear()
         self.current_epoch_dict.clear()
         self.first_row = False
+
+    def truncate_log(self, target_epoch: int):
+        """Remove rows from log file that are newer than target_epoch"""
+        if proc_rank() != 0 or not self.log_file:
+            return
+
+        self.log_file.close()
+        lines = []
+        with open(self.log_path, 'r') as f:
+            all_lines = f.readlines()
+            if not all_lines:
+                return
+
+            # Keep header
+            lines.append(all_lines[0])
+
+            # Keep only lines where epoch <= target_epoch
+            for line in all_lines[1:]:
+                parts = line.split('\t')
+                try:
+                    # Assume first column is 'epoch'
+                    epoch_val = int(parts[0])
+                    if epoch_val <= target_epoch:
+                        lines.append(line)
+                except:
+                    continue
+
+        # Rewrite the file
+        with open(self.log_path, 'w') as f:
+            f.writelines(lines)
+
+        # Re-open in append mode for training
+        self.log_file = open(self.log_path, 'a')
+
+    def close(self):
+        if self.log_file:
+            self.log_file.close()
