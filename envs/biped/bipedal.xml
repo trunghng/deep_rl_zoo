@@ -1,4 +1,4 @@
-<mujoco model="bipedal">
+<mujoco model="biped_robot">
     <compiler angle="degree" coordinate="local"/>
 
     <default>
@@ -21,6 +21,7 @@
         <default class="knee">
             <joint axis="0 1 0" range="0 100"/>
             <geom type="cylinder" size=".04"/>
+            <site size=".041" rgba="1 0 0 0"/>
         </default>
         <default class="lower_leg">
             <geom type="cylinder" size=".01"/>
@@ -43,16 +44,11 @@
         </default>
     </default>
 
-    <asset>
-        <texture name="grid" type="2d" builtin="checker" rgb1=".1 .2 .3"
-            rgb2=".2 .3 .4" width="300" height="300"/>
-        <material name="grid" texture="grid" texrepeat="8 8" reflectance=".2"/>
-    </asset>
-
     <worldbody>
-        <geom name="floor" size="10 10 .05" type="plane" material="grid"/>
-        <light pos="0 0 10" dir="0 0 -1"/>
         <body name="torso" pos="0 0 1.2">
+            <camera name="track" pos="0 -5 0.3" xyaxes="1 0 0 0 0 1" mode="trackcom"/>
+            <camera name="depth_camera" pos="0.7 0 0.5" xyaxes="0 -1 0 0.5 0 0.866" fovy="60"/>
+
             <freejoint name="root"/>
             <geom name="torso_geom" type="box" size=".2 .2 .15"/>
             <body name="pelvis" pos="0 0 -.3">
@@ -66,13 +62,14 @@
                     <body name="lower_leg_left" pos="0 0 -.4">
                         <joint name="knee_left" class="knee"/>
                         <geom name="knee_left_geom" fromto="0 0 0 0 -.08 0" class="knee"/>
+                        <site name="knee_left_site" class="knee"/>
                         <geom name="lower_leg_left" fromto="0 -.04 -.05 0 -.04 -.4" class="lower_leg"/>
                         <body name="foot_left" pos="0 0 -.41">
                             <joint name="ankle_x_left" class="ankle_x"/>
                             <joint name="ankle_y_left" class="ankle_y"/>
                             <geom name="ankle1_left" fromto="-.04 -.04 -.02 .04 -.04 -.02" class="ankle"/>
                             <geom name="ankle2_left" fromto="0 -.005 -.02 0 -.075 -.02" class="ankle"/>
-                            <geom name="foot_left" pos=".03 -.04 -.05" class="foot"/>
+                            <geom name="foot_left_geom" pos=".03 -.04 -.05" class="foot"/>
                             <site name="foot_left_site" pos=".03 -.04 -.05" class="foot"/>
                         </body>
                     </body>
@@ -87,13 +84,14 @@
                     <body name="lower_leg_right" pos="0 0 -.4">
                         <joint name="knee_right" class="knee"/>
                         <geom name="knee_right_geom" fromto="0 0 0 0 .08 0" class="knee"/>
+                        <site name="knee_right_site" class="knee"/>
                         <geom name="lower_leg_right" fromto="0 .04 -.05 0 .04 -.4" class="lower_leg"/>
                         <body name="foot_right" pos="0 0 -.41">
                             <joint name="ankle_x_right" class="ankle_x"/>
                             <joint name="ankle_y_right" class="ankle_y"/>
                             <geom name="ankle1_right" fromto="-.04 .04 -.02 .04 .04 -.02" class="ankle"/>
                             <geom name="ankle2_right" fromto="0 .005 -.02 0 .075 -.02" class="ankle"/>
-                            <geom name="foot_right" pos=".03 .04 -.05" class="foot"/>
+                            <geom name="foot_right_geom" pos=".03 .04 -.05" class="foot"/>
                             <site name="foot_right_site" pos=".03 .04 -.05" class="foot"/>
                         </body>
                     </body>
@@ -119,6 +117,8 @@
     </actuator>
 
     <sensor>
+        <touch name="touch_knee_left" site="knee_left_site"/>
+        <touch name="touch_knee_right" site="knee_right_site"/>
         <touch name="touch_left" site="foot_left_site"/>
         <touch name="touch_right" site="foot_right_site"/>
     </sensor>

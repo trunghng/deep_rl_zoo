@@ -1,5 +1,5 @@
 import argparse, random, os
-from collections import deque
+from collections import defaultdict
 from typing import List, Tuple
 
 import gymnasium as gym
@@ -20,6 +20,7 @@ from common.buffer import VectorRolloutBuffer
 from common.logger import Logger
 from common.lr_schedulers import get_linear_scheduler
 import envs
+import envs.base.base_config as base_config
 
 
 class ActorCritic(nn.Module):
@@ -47,42 +48,28 @@ class PPO:
     """
     PPO w/ Generalized Advantage Estimators & 
             using rewards-to-go as target for the value function
-
-    :param env: (str) Environment name
-    :param exp_name: (str) Experiment name
-    :param cpu: (int) Number of CPUs for parallel computing
-    :param n_envs: (int) The number of sub-environment in the vector environment
-    :param seed: (int) Seed for RNG
-    :param hidden_sizes: (List[int]) Sizes of policy & Q networks' hidden layers
-    :param pi_lr: (float )Learning rate for policy opitimizer
-    :param v_lr: (float) Learning rate for value function optimizer
-    :param lr_decay: (bool) Use linear LR decay
-    :param epochs: (int) Number of epochs
-    :param steps_per_epoch: (int) Maximum number of steps per epoch
-    :param train_pi_iters: (int) Number of GD-steps to take on policy loss per epoch
-    :param train_v_iters: (int) Number of GD-steps to take on value function per epoch
-    :param max_ep_len: (int) Maximum episode/trajectory length
-    :param gamma: (float) Discount factor
-    :param lamb: (float) Lambda for GAE
-    :param kl_target: (float) KL divergence threshold
-    :param clip: (bool) Whether to use clipping, enable penalty otherwise
-    :param clip_ratio: (float) Hyperparamter for clipping the policy objective
-    :param norm_obs: (bool) Normalize observations
-    :param norm_rew: (bool) Normalize rewards
-    :param resume: (str) Path to checkpoint to continue training from
-    :param save: (bool) Save the final model.
-    :param save_every: (int) Model saving frequency.
-    :param save_latest_only: (bool) Save the latest model only
-    :param render: (bool) Render the training result.
-    :param plot: (bool) Plot the statistics.
     """
 
     def __init__(self, args) -> None:
+        spec = gym.spec(args.env)
+        is_custom_env = spec.entry_point.startswith('envs.')
+        env_kwargs = {}
+        vec_mode = 'async'
+        if is_custom_env:
+            if args.scene_type: env_kwargs['scene_type'] = args.scene_type
+            if args.curriculum_mode: env_kwargs['curriculum_mode'] = args.curriculum_mode
+            if args.terrain_type: env_kwargs['terrain_type'] = args.terrain_type
+
+            config = base_config.BaseLeggedConfig()
+            if config.sensor.depth_camera.enabled:
+                vec_mode = 'sync'
+
         self.envs = gym.make_vec(
             args.env,
             num_envs=args.n_envs,
-            vectorization_mode='async',
-            wrappers=[lambda env: ClipAction(env)]
+            vectorization_mode=vec_mode,
+            wrappers=[lambda env: ClipAction(env)],
+            **env_kwargs
         )
         if args.norm_obs:
             self.envs = NormalizeObservation(self.envs)
@@ -134,6 +121,7 @@ class PPO:
             self.clip_ratio = args.clip_ratio
         else:
             pass
+        self.ent_coef = args.ent_coef
         self.enable_save = args.save
         self.save_every = args.save_every
         self.save_latest_only = args.save_latest_only
@@ -143,7 +131,7 @@ class PPO:
         wandb_id = None
         self.start_epoch = 1
         if args.resume:
-            checkpoint = self.load_checkpoint(args.resume)
+            checkpoint = self.load(args.resume)
             wandb_id = checkpoint.get('wandb_id')
             self.start_epoch = checkpoint.get('epoch', 0) + 1
             mpi.mpi_print(f'Successfully loaded checkpoint from epoch {self.start_epoch - 1}')
@@ -176,13 +164,16 @@ class PPO:
             ratio = log_ratio.exp()
             loss_cpi = ratio * advs
             clip_advs = ((1 + self.clip_ratio) * (advs > 0) + (1 - self.clip_ratio) * (advs < 0)) * advs
-            pi_loss = -torch.min(loss_cpi, clip_advs).mean() 
+
+            pi_loss = -torch.min(loss_cpi, clip_advs).mean()
+            entropy = pi.entropy().mean()
+            total_pi_loss = pi_loss - self.ent_coef * entropy
 
             # approximated avg KL
             # approx_kl = (-log_ratio).mean().item()
             # http://joschu.net/blog/kl-approx.html
             approx_kl = ((ratio - 1) - log_ratio).mean().item()
-            return pi_loss, approx_kl
+            return total_pi_loss, approx_kl, entropy.item()
 
         def compute_v_loss(observations, rewards_to_go):
             v_values = self.ac.critic(observations).squeeze(-1)
@@ -194,7 +185,7 @@ class PPO:
 
         for step in range(1, self.train_pi_iters + 1):
             self.actor_opt.zero_grad()
-            pi_loss, approx_kl = compute_pi_loss(observations, actions, logps_prob, advs)
+            pi_loss, approx_kl, entropy = compute_pi_loss(observations, actions, logps_prob, advs)
             kl = mpi.mpi_avg(approx_kl)
             if kl > 1.5 * self.kl_target:
                 self.logger.log(f'Early stopping at step {step} due to exceeding KL target')
@@ -214,14 +205,20 @@ class PPO:
             'pi-loss': pi_loss.item(),
             'v-loss': v_loss.item(),
             'v-values': v_values.detach().cpu().numpy(),
-            'kl': kl
+            'kl': kl,
+            'entropy': entropy
         })
 
-    def select_action(self, observations: np.ndarray, action_only: bool=True) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def select_action(
+        self,
+        observations: np.ndarray,
+        action_only: bool = True,
+        deterministic: bool = False
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         observations = to_tensor(observations, device=self.device)
         with torch.no_grad():
             pi = self.ac.actor._distribution(observations)
-            actions = pi.sample()
+            actions = pi.mean if deterministic else pi.sample()
             if action_only:
                 return actions.cpu().numpy()
             log_probs = self.ac.actor._log_prob(pi, actions)
@@ -229,11 +226,14 @@ class PPO:
         return actions.cpu().numpy(), log_probs.cpu().numpy().flatten(), values.cpu().numpy().flatten()
 
     def save(self, epoch: int):
-        obs_rms = None
+        obs_rms, return_rms = None, None
         current_env = self.envs
         while hasattr(current_env, 'env'):
             if hasattr(current_env, 'obs_rms'):
                 obs_rms = current_env.obs_rms
+            if hasattr(current_env, 'return_rms'):
+                return_rms = current_env.return_rms
+            if obs_rms is not None and return_rms is not None:
                 break
             current_env = current_env.env
         state = {
@@ -243,34 +243,32 @@ class PPO:
             'actor_opt': self.actor_opt.state_dict(),
             'critic_opt': self.critic_opt.state_dict(),
             'obs_rms': obs_rms,
+            'return_rms': return_rms,
             'wandb_id': wandb.run.id if (self.logger.use_wandb and mpi.proc_rank() == 0) else None
         }
         self.logger.save_latest(state)
         if not self.save_latest_only and epoch % self.save_every == 0:
             self.logger.save_state(state, epoch)
 
-    def load(self, model_path: str) -> None:
-        """Lightweight load for inference only"""
-        checkpoint = torch.load(model_path)
-        if 'actor' in checkpoint:
-            self.ac.actor.load_state_dict(checkpoint['actor'])
-        else:
-            # Backward compatibility for old model files
-            self.ac.load_state_dict(checkpoint)
-
-    def load_checkpoint(self, checkpoint_path) -> dict:
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+    def load(self, checkpoint_path: str, env = None) -> dict:
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         self.ac.actor.load_state_dict(checkpoint['actor'])
         self.ac.critic.load_state_dict(checkpoint['critic'])
         self.actor_opt.load_state_dict(checkpoint['actor_opt'])
         self.critic_opt.load_state_dict(checkpoint['critic_opt'])
 
-        if 'obs_rms' in checkpoint and checkpoint['obs_rms']:
-            mpi.mpi_print('Restoring observation normalization statistics...')
-            current_env = self.envs
-            while hasattr(current_env, 'env'):
-                if hasattr(current_env, 'obs_rms'):
+        target_env = env if env is not None else self.envs
+
+        if target_env:
+            current_env = target_env
+            while True:
+                if 'obs_rms' in checkpoint and hasattr(current_env, 'obs_rms'):
+                    mpi.mpi_print('Restoring observation normalization statistics...')
                     current_env.obs_rms = checkpoint['obs_rms']
+                if 'return_rms' in checkpoint and hasattr(current_env, 'return_rms'):
+                    mpi.mpi_print('Restoring reward normalization statistics...')
+                    current_env.return_rms = checkpoint['return_rms']
+                if not hasattr(current_env, 'env'):
                     break
                 current_env = current_env.env
         return checkpoint
@@ -279,9 +277,8 @@ class PPO:
         observations, _ = self.envs.reset() # (B, O)
         try:
             for epoch in range(self.start_epoch, self.epochs + 1):
-                epoch_returns = []
-                epoch_lengths = []
-                rewards_upright, rewards_energy, forward_velocities, torso_heights = [], [], [], []
+                epoch_returns, epoch_lengths = [], []
+                env_info_dict = defaultdict(list)
 
                 for t in range(self.proc_steps_per_epoch):
                     actions, log_probs, values = self.select_action(observations, action_only=False) # (B, A), (B,), (B,)
@@ -299,23 +296,17 @@ class PPO:
                                 epoch_returns.append(episode_returns[i])
                                 epoch_lengths.append(episode_lengths[i])
 
-                    if 'reward_upright' in info:
-                        rewards_upright.append(info['reward_upright'].mean())
-                        rewards_energy.append(info['reward_energy'].mean())
-                        forward_velocities.append(info['forward_velocity'].mean())
-                        torso_heights.append(info['torso_height'].mean())
+                    for key, val in info.items():
+                        if key.startswith('reward_') or key in ['forward_velocity', 'torso_height']:
+                            log_key = f"env-{key.replace('_', '-')}"
+                            env_info_dict[log_key].append(val.mean())
 
                 self.logger.add({
                     'episode-return': epoch_returns,
                     'episode-length': epoch_lengths
                 })
-                if rewards_upright:
-                    self.logger.add({
-                        'env-reward-upright': rewards_upright,
-                        'env-reward-energy': rewards_energy,
-                        'env-forward-velocity': forward_velocities,
-                        'env-torso-height': torso_heights
-                    })
+                if env_info_dict:
+                    self.logger.add(env_info_dict)
 
                 _, _, last_values = self.select_action(observations, action_only=False)
                 self.buffer.finish_rollout(last_values)
@@ -335,11 +326,9 @@ class PPO:
                 self.logger.log_epoch('v-loss', average_only=True)
                 self.logger.log_epoch('v-values', need_optima=True)
                 self.logger.log_epoch('kl', average_only=True)
-                if rewards_upright:
-                    self.logger.log_epoch('env-reward-upright', average_only=True)
-                    self.logger.log_epoch('env-reward-energy', average_only=True)
-                    self.logger.log_epoch('env-forward-velocity', average_only=True)
-                    self.logger.log_epoch('env-torso-height', average_only=True)
+                self.logger.log_epoch('entropy', average_only=True)
+                for key in env_info_dict.keys():
+                    self.logger.log_epoch(key, average_only=True)
                 self.logger.log_epoch('episode-return', need_optima=True)
                 self.logger.log_epoch('episode-length', average_only=True)
                 self.logger.log_epoch('total-env-interacts', epoch * self.steps_per_epoch)
@@ -408,10 +397,19 @@ if __name__ == '__main__':
                         help='Whether to use PPO-Clip, use PPO-Penalty otherwise')
     parser.add_argument('--clip-ratio', type=float, default=0.2,
                         help='Hyperparameter for clipping in the policy objective')
+    parser.add_argument('--ent-coef', type=float, default=0.01,
+                        help='Entropy coefficient for exploration')
     parser.add_argument('--norm-obs', action='store_true',
                         help='Normalize observations')
     parser.add_argument('--norm-rew', action='store_true',
                         help='Normalize rewards')
+    parser.add_argument('--scene-type', type=str, default=None, choices=['arena', 'lane'],
+                        help='Terrain scene type (for custom envs)')
+    parser.add_argument('--curriculum-mode', type=str, default=None, choices=['grid', 'single'],
+                        help='Curriculum mode (for custom envs)')
+    parser.add_argument('--terrain-type', type=str, default=None,
+                        choices=['random', 'rough', 'stairs_up', 'stairs_down', 'hill', 'pit'],
+                        help='Specific terrain type for single mode (for custom envs)')
     parser.add_argument('--use-wandb', action='store_true',
                         help='Use Weights & Biases logging')
     parser.add_argument('--resume', type=str, default=None,

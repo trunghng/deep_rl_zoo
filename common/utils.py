@@ -1,4 +1,6 @@
 import random
+import os
+import platform
 from typing import Callable, List
 
 import gymnasium as gym
@@ -18,6 +20,23 @@ def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
+
+
+def setup_headless_rendering() -> None:
+    """Configures environment variables for headless rendering on Linux servers"""
+    try:
+        import mujoco
+        def silence_mujoco_warning(warning_msg):
+            pass
+        mujoco.set_mju_user_warning(silence_mujoco_warning)
+    except ImportError:
+        pass
+    
+    if platform.system() == 'Linux':
+        if 'MUJOCO_GL' not in os.environ:
+            os.environ['MUJOCO_GL'] = 'egl'
+        if 'PYOPENGL_PLATFORM' not in os.environ:
+            os.environ['PYOPENGL_PLATFORM'] = 'egl'
 
 
 def flatten(tensor):

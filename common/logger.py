@@ -30,7 +30,9 @@ class Logger:
         self.config = config or {}
         self.use_wandb = config.get('use_wandb', False)
         self.wandb_id = config.get('wandb_id', None)
-        if proc_rank() == 0:
+        self.test_mode = self.config.get('test_mode', False)
+        
+        if proc_rank() == 0 and not self.test_mode:
             self.log_dir = log_dir if log_dir else f'/tmp/experiments/{str(dt.now())}'
             if not osp.exists(self.log_dir):
                 os.makedirs(self.log_dir)
@@ -61,7 +63,7 @@ class Logger:
         self.current_epoch_dict = dict()
 
     def save_config(self, config: Dict) -> None:
-        if proc_rank() == 0:
+        if proc_rank() == 0 and self.log_dir is not None:
             output = json.dumps(config, separators=(',',':\t'), indent=4)
             print('Experiment config:\n', output)
             with open(osp.join(self.log_dir, 'config.json'), 'w') as out:
@@ -69,11 +71,11 @@ class Logger:
             self.config = config
 
     def save_state(self, state_dict, epoch: int) -> None:
-        if proc_rank() == 0:
+        if proc_rank() == 0 and self.log_dir is not None:
             torch.save(state_dict, osp.join(self.log_dir, f'checkpoint_ep{epoch}.pt'))
 
     def save_latest(self, state_dict):
-        if proc_rank() == 0:
+        if proc_rank() == 0 and self.log_dir is not None:
             torch.save(state_dict, osp.join(self.log_dir, 'latest.pt'))
 
     def render(self, action_selection: Callable, video: bool = True) -> None:
