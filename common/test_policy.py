@@ -40,9 +40,11 @@ def test(args) -> None:
     else:
         render_mode = None
     env_kwargs = {}
-    if hasattr(config, 'scene_type'): env_kwargs['scene_type'] = config.scene_type
-    if hasattr(config, 'curriculum_mode'): env_kwargs['curriculum_mode'] = config.curriculum_mode
-    if hasattr(config, 'terrain_type'): env_kwargs['terrain_type'] = config.terrain_type
+    if hasattr(config, 'env_config') and 'terrain' in config.env_config:
+        terrain_config = config.env_config['terrain']
+        env_kwargs['scene_type'] = terrain_config.get('scene_type')
+        env_kwargs['curriculum_mode'] = terrain_config.get('curriculum_mode')
+        env_kwargs['terrain_type'] = terrain_config.get('single_terrain_type')
 
     env = gym.make_vec(
         config.env,

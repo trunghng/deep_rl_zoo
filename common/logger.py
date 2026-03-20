@@ -62,8 +62,14 @@ class Logger:
         self.epochs_dict = defaultdict(list)
         self.current_epoch_dict = dict()
 
-    def save_config(self, config: Dict) -> None:
+    def save_config(self, config: Dict, env=None) -> None:
         if proc_rank() == 0 and self.log_dir is not None:
+            if env is not None:
+                try:
+                    config['env_config'] = env.unwrapped.envs[0].unwrapped.get_config()
+                except:
+                    pass
+
             output = json.dumps(config, separators=(',',':\t'), indent=4)
             print('Experiment config:\n', output)
             with open(osp.join(self.log_dir, 'config.json'), 'w') as out:

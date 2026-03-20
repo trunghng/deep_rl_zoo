@@ -53,7 +53,7 @@ class BaseLeggedConfig(BaseConfig):
         blend_distance_m = 0.6          # Distance for smoothing clearing edges (m)
         stair_step_range = (2, 5)       # Randomization range for number of steps (min, max+1)
         hill_height_range = (0.3, 0.5)  # Randomization range for hill/pit height
-        spawn_lock_size_m = 1.0         # Radius/length of perfectly flat spawn zone (m)
+        spawn_lock_size_m = 2.5         # Increased: 5m total flat runway (2.5m front/back)
         spawn_lock_blend_m = 0.5        # Blending distance for spawn zone edge (m)
         global_sigma = 0.8              # Global Gaussian filter strength (pixel-wise)
 
@@ -66,6 +66,12 @@ class BaseLeggedConfig(BaseConfig):
             near = 0.1               
             far = 8.0                
             update_interval = 5
+
+    class privileged_info:
+        """Data given to the Teacher policy"""
+        enabled = False
+        scan_points_x = [0.1, 0.3, 0.5]   # Default forward points (m)
+        scan_points_y = [-0.2, 0.0, 0.2]  # Default lateral points (m)
 
     class rewards:
         """Reward settings"""

@@ -292,9 +292,9 @@ class TerrainGenerator:
             raise ValueError("HField 'terrain' not found in model")
 
         ny, nx = model.hfield_nrow[hfield_id], model.hfield_ncol[hfield_id]
-        half_x = model.hfield_size[hfield_id][0]
-        m_per_px = (2.0 * half_x) / nx
-        
+        radius_x = model.hfield_size[hfield_id][0]
+        m_per_px = (2.0 * radius_x) / nx
+
         step_depth_px = max(1, int(self.config.terrain.step_width_m / m_per_px))
 
         scene_type = self.config.terrain.scene_type
@@ -423,13 +423,7 @@ class TerrainGenerator:
         """
         hfield_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_HFIELD, 'terrain')
 
-        # Get hfield physical metadata
-        # size is [half_x, half_y, z_top, base_thick]
-        half_x = model.hfield_size[hfield_id][0]
-        half_y = model.hfield_size[hfield_id][1]
-        z_top = model.hfield_size[hfield_id][2]
-
-        # Get pixel metadata
+        radius_x, radius_y, elevation_z, _ = model.hfield_size[hfield_id]
         ny = model.hfield_nrow[hfield_id]
         nx = model.hfield_ncol[hfield_id]
 
@@ -441,20 +435,20 @@ class TerrainGenerator:
                 break
 
         # Map world (x, y) to local hfield indices [0, 1]
-        # x_local = (world_x - geom_center_x + half_x) / (2 * half_x)
-        lx = (x - geom_pos[0] + half_x) / (2.0 * half_x)
-        ly = (y - geom_pos[1] + half_y) / (2.0 * half_y)
+        # local_x = (x - geom_center_x + radius_x) / (2 * radius_x)
+        local_x = (x - geom_pos[0] + radius_x) / (2.0 * radius_x)
+        local_y = (y - geom_pos[1] + radius_y) / (2.0 * radius_y)
 
         # Clip to boundaries
-        lx, ly = np.clip(lx, 0, 1), np.clip(ly, 0, 1)
+        local_x, local_y = np.clip(local_x, 0, 1), np.clip(local_y, 0, 1)
 
         # Convert to pixel indices
-        ix = int(lx * (nx - 1))
-        iy = int(ly * (ny - 1))
+        ix = int(local_x * (nx - 1))
+        iy = int(local_y * (ny - 1))
 
         # Retrieve data (MuJoCo buffer is row-major Y, then X)
         height_raw = model.hfield_data[iy * nx + ix]
 
         # Scale back to meters
-        # hfield_data is [0, 1], we multiply by z_top and add geom Z
-        return height_raw * z_top + geom_pos[2]
+        # hfield_data is [0, 1], we multiply by elevation_z and add geom Z
+        return height_raw * elevation_z + geom_pos[2]

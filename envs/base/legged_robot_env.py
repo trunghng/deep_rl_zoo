@@ -115,7 +115,12 @@ class LeggedRobotEnv(BaseEnv):
     def _get_total_reward(self):
         total_reward = 0.0
         self.info_rewards = {}
-        reward_scales = {k: v for k, v in vars(self.config.rewards.scales).items() if not k.startswith('__')}
+
+        reward_scales = {
+            k: getattr(self.config.rewards.scales, k) 
+            for k in dir(self.config.rewards.scales) 
+            if not k.startswith('__') and not callable(getattr(self.config.rewards.scales, k))
+        }
 
         for reward_name, scale in reward_scales.items():
             if scale != 0.0:
