@@ -1,12 +1,10 @@
 <mujoco model="lane">
     <asset>
-        <texture name="grid" type="2d" builtin="checker" rgb1=".1 .2 .3" rgb2=".2 .3 .4" width="300" height="300"/>
-        <material name="grid" texture="grid" texrepeat="8 8" reflectance=".2"/>
-        <hfield name="terrain" nrow="100" ncol="500" size="10 2 1.0 0.5"/>
+        <hfield name="terrain" nrow="50" ncol="250" size="10 2 2.0 0.1"/>
     </asset>
 
     <worldbody>
-        <geom name="floor" type="hfield" hfield="terrain" pos="9 0 -0.5" rgba="0.4 0.4 0.4 1"/>
+        <geom name="floor" type="hfield" hfield="terrain" pos="9 0 0" rgba="0.4 0.4 0.4 1" contype="1" conaffinity="1"/>
         <light pos="9 0 10" dir="0 0 -1"/>
     </worldbody>
 </mujoco>

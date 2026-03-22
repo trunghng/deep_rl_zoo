@@ -10,6 +10,7 @@ from collections import defaultdict
 from typing import Callable, Dict
 
 import gymnasium as gym
+from gymnasium.spaces import Discrete
 from gymnasium.wrappers import RecordVideo
 import torch
 import numpy as np
@@ -18,6 +19,7 @@ import wandb
 
 from common.mpi_utils import proc_rank, mpi_get_statistics, mpi_print
 from common.plot import plot
+from common.utils import dim, get_spaces
 
 
 class Logger:
@@ -66,7 +68,18 @@ class Logger:
         if proc_rank() == 0 and self.log_dir is not None:
             if env is not None:
                 try:
-                    config['env_config'] = env.unwrapped.envs[0].unwrapped.get_config()
+                    observation_space, action_space = get_spaces(env)
+                    config['obs_dim'] = dim(observation_space)
+                    config['act_dim'] = dim(action_space)
+                    config['is_discrete_action'] = isinstance(action_space, Discrete)
+
+                    current_env = env
+                    while not hasattr(current_env, 'call') and hasattr(current_env, 'env'):
+                        current_env = current_env.env
+                    if hasattr(current_env, 'call'):
+                        config['env_config'] = current_env.call('get_config')[0]
+                    elif hasattr(env, 'unwrapped') and hasattr(env.unwrapped, 'get_config'):
+                        config['env_config'] = env.unwrapped.get_config()
                 except:
                     pass
 

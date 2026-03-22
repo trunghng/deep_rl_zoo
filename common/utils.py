@@ -1,7 +1,7 @@
 import random
 import os
 import platform
-from typing import Callable, List
+from typing import Callable, List, Tuple
 
 import gymnasium as gym
 from gymnasium.spaces import Space, Box, Discrete
@@ -41,13 +41,11 @@ def setup_headless_rendering() -> None:
 
 def flatten(tensor):
     """Flatten tensor"""
-
     return torch.cat([t.contiguous().view(-1) for t in tensor])
 
 
 def conjugate_gradient(Ax, b, cg_iters: int):
     """Conjugate gradient"""
-
     x = torch.zeros(b.shape)
     r = b.clone()
     p = r.clone()
@@ -82,13 +80,23 @@ def hard_update(network, target_network) -> None:
     target_network.load_state_dict(network.state_dict())
 
 
+def get_spaces(env) -> Tuple[Space, Space]:
+    if hasattr(env, 'single_observation_space'):
+        observation_space = env.single_observation_space
+        action_space = env.single_action_space
+    else:
+        observation_space = env.observation_space
+        action_space = env.action_space
+    return observation_space, action_space
+
+
 def dim(space: Space) -> int:
     """Return dimensionality of the space"""
     if hasattr(space, 'single_observation_space'):
         return dim(space.single_observation_space)
 
     if isinstance(space, Box):
-        return np.prod(space.shape)
+        return int(np.prod(space.shape))
     elif isinstance(space, Discrete):
         return space.n
     else:
@@ -110,7 +118,6 @@ def make_atari_env(env: str, render_mode: str=None) -> gym.Env:
     assert len(env.observation_space.shape) == 3, f'{env.observation_space.shape} is not an image space'
     h, w, c = env.observation_space.shape
     env.observation_space = Box(low=0, high=255, shape=(c, h, w), dtype=env.observation_space.dtype)
-
     return env
 
 
@@ -142,3 +149,21 @@ def split_obs_action(joint_data: torch.Tensor, data_dims: List[int]):
     :param data_dims: list of dimensionalities of agents' action (observation) spaces
     """
     return torch.split(joint_data, data_dims, dim=1)
+
+
+def get_algo_class(algo_name: str):
+    from zoo.single.ddpg import DDPG
+    from zoo.single.dqn import DQN
+    from zoo.single.ppo import PPO
+    from zoo.single.sac import SAC
+    from zoo.single.trpo import TRPO
+    from zoo.single.vpg import VPG
+
+    algos = {
+        'ddpg': DDPG, 'dqn': DQN,
+        'ppo': PPO, 'sac': SAC,
+        'trpo': TRPO, 'vpg': VPG
+    }
+    if algo_name not in algos:
+        raise ValueError(f"Algorithm '{algo_name}' not found. Supported: {list(algos.keys())}")
+    return algos[algo_name]

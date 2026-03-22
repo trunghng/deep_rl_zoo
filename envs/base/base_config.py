@@ -30,16 +30,16 @@ class BaseLeggedConfig(BaseConfig):
         enabled = True                  # Toggle terrain generation on/off
         scene_type = "arena"            # Default scene
         curriculum_mode = "grid"        # Default mode
+        terrain_type = "flat"           # Default type
         nx_zones = 5                    # Number of zones along X-axis
         ny_zones = 5                    # Number of zones along Y-axis
         spawn_zone = (2, 2)             # Default spawn zone
         terrain_types = [
             "rough", "stairs_up", "stairs_down", "hill", "pit"
         ]                               # Types to randomly spawn in grid mode
-        single_terrain_type = "flat"    # Default type for single mode
 
         # Physical Dimensions (m)
-        base_height = 0.5               # Base height of the floor
+        base_height = 0.0               # Base height of the floor (0.0 = world z=0)
         roughness = 0.05                # Maximum height of random bumps
         step_height = 0.2               # Height of each stair step
         step_width_m = 0.4              # Depth of each stair step
@@ -60,7 +60,7 @@ class BaseLeggedConfig(BaseConfig):
     class sensor:
 
         class depth_camera:
-            enabled = True
+            enabled = False
             width = 16
             height = 16
             near = 0.1               

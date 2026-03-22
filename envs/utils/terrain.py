@@ -34,7 +34,7 @@ class TerrainGenerator:
         nx, ny = grid.shape
         roughness = roughness or self.config.terrain.roughness
         scale = self.config.terrain.noise_scale
-        
+
         bx, by = max(1, int(nx * scale)), max(1, int(ny * scale))
         small_grid = np_random.uniform(low=-roughness/2, high=roughness/2, size=(bx, by))
         smooth_grid = scipy.ndimage.zoom(small_grid, (nx/bx, ny/by), order=3)
@@ -71,13 +71,13 @@ class TerrainGenerator:
         faces: int = 4
     ) -> np.ndarray:
         """
-        Generates a 2D linear window to force features to zero at zone boundaries
+        Generates a 2D smooth S-curve window to blend features into zone boundaries.
 
         Args:
             grid: The target grid for dimensions
             m_per_px: Resolution scale (meters per pixel)
             faces: Dimensionality of the window (1/2 for X-only, 4 for X-Y)
-            
+
         Returns:
             A 2D windowing mask [0, 1]
         """
@@ -88,14 +88,14 @@ class TerrainGenerator:
         # Calculate distance from edges in pixels
         taper_px = self.config.terrain.taper_distance_m / m_per_px
 
-        # Linear taper from 0 to 1 over the taper_px distance
+        # Linear ramp from 0 to 1 over the taper_px distance
         win_x = np.clip(np.minimum(X, nx - 1 - X) / taper_px, 0, 1)
         win_y = np.clip(np.minimum(Y, ny - 1 - Y) / taper_px, 0, 1)
 
-        if faces == 1 or faces == 2:
-            return win_x
-        else:
-            return win_x * win_y
+        # Transform to S-Curve (Cosine) for organic transitions
+        win_x = 0.5 * (1.0 - np.cos(win_x * np.pi))
+        win_y = 0.5 * (1.0 - np.cos(win_y * np.pi))
+        return win_x if (faces == 1 or faces == 2) else win_x * win_y
 
     def _apply_stair_geometry(
         self,
@@ -107,7 +107,7 @@ class TerrainGenerator:
     ) -> None:
         """
         Applies mathematical staircase steps to a grid
-        
+
         Args:
             grid: The zone to modify
             num_steps: Number of steps to create
@@ -117,7 +117,6 @@ class TerrainGenerator:
         """
         dist = self._get_dist_mask(grid, faces)
         margin = int(grid.shape[0] * self.config.terrain.feature_margin)
-        
         step_index = (dist - margin) // step_depth_px
         step_index = np.clip(step_index, 0, num_steps)
         grid += step_index * step_height
@@ -166,8 +165,8 @@ class TerrainGenerator:
         faces: int = 4
     ) -> None:
         """
-        Flattens a specific area to the base height for obstacle placement
-        
+        Flattens a specific area to the base height using smooth S-curve blending.
+
         Args:
             grid: The zone to modify
             m_per_px: Resolution scale
@@ -176,8 +175,39 @@ class TerrainGenerator:
         dist = self._get_dist_mask(grid, faces)
         blend_px = self.config.terrain.blend_distance_m / m_per_px
 
+        # S-Curve blending ramp [0, 1]
         flatten_mask = np.clip((dist - 2) / blend_px, 0.0, 1.0)
+        flatten_mask = 0.5 * (1.0 - np.cos(flatten_mask * np.pi))
+
         grid[:] = self.base_h + (grid - self.base_h) * (1.0 - flatten_mask)
+
+    def _smooth_seams(self, grid: np.ndarray, nx_zones: int, ny_zones: int) -> np.ndarray:
+        """
+        Applies a local blur specifically to the boundary lines between zones
+        to make the overall terrain look like one continuous piece.
+        """
+        nx, ny = grid.shape
+        zx, zy = nx // nx_zones, ny // ny_zones
+
+        # Create a blurred version of the whole map
+        blurred = scipy.ndimage.gaussian_filter(grid, sigma=3.0)
+
+        # Create a soft mask for the seams
+        seam_mask = np.zeros_like(grid)
+        seam_width = 8 # Increased width for wider blending
+
+        for i in range(1, nx_zones):
+            s_s, s_e = i*zx - seam_width, i*zx + seam_width
+            seam_mask[max(0, s_s) : min(nx, s_e), :] = 1.0
+        for j in range(1, ny_zones):
+            s_s, s_e = j*zy - seam_width, j*zy + seam_width
+            seam_mask[:, max(0, s_s) : min(ny, s_e)] = 1.0
+  
+        # Apply Gaussian filter to the seam_mask itself to make the transition soft
+        seam_mask = scipy.ndimage.gaussian_filter(seam_mask, sigma=seam_width/2)
+
+        # Blend the blurred seams back into the original grid using the soft mask
+        return (1.0 - seam_mask) * grid + seam_mask * blurred
 
     def create_staircase(
         self,
@@ -204,6 +234,57 @@ class TerrainGenerator:
         self._clear_area(grid, m_per_px, faces)
         self._apply_natural_hill(grid, height, np_random, m_per_px, faces)
 
+    def _get_terrain_type(self, np_random: np.random.Generator) -> str:
+        """Determines the specific terrain feature to generate based on config"""
+        choice = self.config.terrain.terrain_type
+        if choice == 'random':
+            choice = np_random.choice(self.config.terrain.terrain_types)
+        return choice
+
+    def _fill_zone_with_feature(
+        self, 
+        zone: np.ndarray, 
+        choice: str, 
+        np_random: np.random.Generator, 
+        step_depth_px: int, 
+        m_per_px: float, 
+        faces: int
+    ) -> bool:
+        """
+        Populates a specific grid area with the chosen terrain feature.
+
+        Args:
+            zone: The 2D array slice to modify
+            choice: The type of terrain (stairs, hill, etc.)
+            np_random: Random generator for offsets/steps
+            step_depth_px: Horizontal depth per stair step
+            m_per_px: Meters per pixel resolution
+            faces: Directions for feature rise
+
+        Returns:
+            True if the feature is a staircase (requires a mask update for smoothing).
+        """
+        s_min, s_max = self.config.terrain.stair_step_range
+        n_steps = np_random.integers(s_min, s_max)
+        h_min, h_max = self.config.terrain.hill_height_range
+        h_offset = np_random.uniform(h_min, h_max)
+
+        if choice == 'flat':
+            self._clear_area(zone, m_per_px, faces=faces)
+        elif choice == 'rough':
+            self._apply_roughness(zone, np_random)
+        elif choice == 'stairs_up':
+            self.create_staircase(zone, n_steps, self.config.terrain.step_height, step_depth_px, m_per_px, faces)
+            return True
+        elif choice == 'stairs_down':
+            self.create_staircase(zone, n_steps, -self.config.terrain.step_height, step_depth_px, m_per_px, faces)
+            return True
+        elif choice == 'hill':
+            self.create_smooth_mound(zone, h_offset, np_random, m_per_px, faces)
+        elif choice == 'pit':
+            self.create_smooth_mound(zone, -h_offset, np_random, m_per_px, faces)
+        return False
+
     def generate_grid_terrain(
         self,
         np_random: np.random.Generator,
@@ -221,7 +302,7 @@ class TerrainGenerator:
             ny: Number of pixels in Y
             step_depth_px: Calculated step depth
             m_per_px: Resolution scale
-            
+
         Returns:
             Tuple of (full_grid, staircase_mask).
         """
@@ -236,10 +317,12 @@ class TerrainGenerator:
 
         grid = np.full((nx, ny), self.base_h)
         stair_mask = np.zeros((nx, ny), dtype=bool)
-        self._apply_roughness(grid, np_random)
+        
+        # Apply global roughness unless the primary terrain type is perfectly flat
+        if self.config.terrain.terrain_type != 'flat':
+            self._apply_roughness(grid, np_random)
 
         zx_size, zy_size = nx // nx_zones, ny // ny_zones
-        terrain_types = self.config.terrain.terrain_types
         default_faces = 4 if scene_type == 'arena' else 2
 
         for rx in range(nx_zones):
@@ -248,53 +331,37 @@ class TerrainGenerator:
                 c_s, c_e = cy * zy_size, (cy + 1) * zy_size
                 zone = grid[r_s:r_e, c_s:c_e]
 
+                # Clear the spawn zone
                 if rx == spawn_zone[0] and cy == spawn_zone[1]:
                     self._clear_area(zone, m_per_px, faces=default_faces)
                     continue
 
-                choice = np_random.choice(terrain_types)
-                s_min, s_max = self.config.terrain.stair_step_range
-                n_steps = np_random.integers(s_min, s_max)
-
-                h_min, h_max = self.config.terrain.hill_height_range
-                h_offset = np_random.uniform(h_min, h_max)
-
-                if choice == 'stairs_up':
-                    self.create_staircase(
-                        zone, n_steps, self.config.terrain.step_height, step_depth_px, m_per_px, default_faces
-                    )
+                choice = self._get_terrain_type(np_random)
+                is_stairs = self._fill_zone_with_feature(
+                    zone, choice, np_random, step_depth_px, m_per_px, default_faces
+                )
+                if is_stairs:
                     stair_mask[r_s:r_e, c_s:c_e] = True
-                elif choice == 'stairs_down':
-                    self.create_staircase(
-                        zone, n_steps, -self.config.terrain.step_height, step_depth_px, m_per_px, default_faces
-                    )
-                    stair_mask[r_s:r_e, c_s:c_e] = True
-                elif choice == 'hill':
-                    self.create_smooth_mound(zone, h_offset, np_random, m_per_px, default_faces)
-                elif choice == 'pit':
-                    self.create_smooth_mound(zone, -h_offset, np_random, m_per_px, default_faces)
         
+        # Smooth the seams between all the randomized zones
+        grid = self._smooth_seams(grid, nx_zones, ny_zones)
         return grid, stair_mask
 
-    def update_hfield(self, model: mujoco.MjModel, np_random: np.random.Generator) -> None:
+    def update_hfield(self, model: mujoco.MjModel, hfield_id: int, np_random: np.random.Generator) -> None:
         """
         Generates and injects terrain into MuJoCo
 
         Args:
             model: The MuJoCo model to update.
+            hfield_id: Pre-cached ID of the 'terrain' hfield.
             np_random: NumPy random generator
         """
-        if not self.config.terrain.enabled:
+        if not self.config.terrain.enabled or hfield_id == -1:
             return
-
-        hfield_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_HFIELD, 'terrain')
-        if hfield_id == -1:
-            raise ValueError("HField 'terrain' not found in model")
 
         ny, nx = model.hfield_nrow[hfield_id], model.hfield_ncol[hfield_id]
         radius_x = model.hfield_size[hfield_id][0]
         m_per_px = (2.0 * radius_x) / nx
-
         step_depth_px = max(1, int(self.config.terrain.step_width_m / m_per_px))
 
         scene_type = self.config.terrain.scene_type
@@ -305,35 +372,14 @@ class TerrainGenerator:
         elif mode == 'single':
             grid = np.full((nx, ny), self.base_h)
             stair_mask = np.zeros((nx, ny), dtype=bool)
-
-            choice = self.config.terrain.single_terrain_type
-            if choice == 'random':
-                choice = np_random.choice(self.config.terrain.terrain_types)
-
+            choice = self._get_terrain_type(np_random)
             f = np_random.choice([1, 2])
-            s_min, s_max = self.config.terrain.stair_step_range
-            n = np_random.integers(s_min, s_max)
-            h_min, h_max = self.config.terrain.hill_height_range
-            h = np_random.uniform(h_min, h_max)
 
-            if choice == 'rough':
-                self._apply_roughness(grid, np_random)
-            elif choice == 'flat':
-                pass  # leave grid at self.base_h
-            elif choice == 'stairs_up': 
-                self.create_staircase(
-                    grid, n, self.config.terrain.step_height, step_depth_px, m_per_px, faces=f
-                )
+            is_stairs = self._fill_zone_with_feature(
+                grid, choice, np_random, step_depth_px, m_per_px, faces=f
+            )
+            if is_stairs:
                 stair_mask[:] = True
-            elif choice == 'stairs_down': 
-                self.create_staircase(
-                    grid, n, -self.config.terrain.step_height, step_depth_px, m_per_px, faces=f
-                )
-                stair_mask[:] = True
-            elif choice == 'hill':
-                self.create_smooth_mound(grid, h, np_random, m_per_px, faces=f)
-            elif choice == 'pit':
-                self.create_smooth_mound(grid, -h, np_random, m_per_px, faces=f)
         else:
             print(f"Terrain mode '{mode}' not recognized. Generating flat floor.")
             grid = np.full((nx, ny), self.base_h)
@@ -345,26 +391,32 @@ class TerrainGenerator:
         if scene_type == 'lane': 
             lock_dist = np.arange(nx)[:, None] * m_per_px
             lock_mask = np.clip(((lock_size_m + 1.0) - lock_dist) / lock_blend_m, 0, 1)
+            # Apply S-curve to spawn lock
+            lock_mask = 0.5 * (1.0 - np.cos(lock_mask * np.pi))
             grid[:] = self.base_h + (grid - self.base_h) * (1.0 - lock_mask)
         else:
             r = np.arange(nx); c = np.arange(ny)
             X, Y = np.meshgrid((r - nx//2) * m_per_px, (c - ny//2) * m_per_px, indexing='ij')
             d = np.sqrt(X**2 + Y**2)
             lock_mask = np.clip((lock_size_m - d) / lock_blend_m, 0, 1)
+            # Apply S-curve to spawn lock
+            lock_mask = 0.5 * (1.0 - np.cos(lock_mask * np.pi))
             grid[:] = self.base_h + (grid - self.base_h) * (1.0 - lock_mask)
 
+        # Global Smoothing Pass
         smoothed_grid = scipy.ndimage.gaussian_filter(grid, sigma=self.config.terrain.global_sigma)
-        final_grid = np.where(stair_mask, grid, smoothed_grid)
 
-        model.hfield_data[:] = final_grid.T.flatten()
+        # Soft-Masking for Stairs:
+        # We want stairs to stay relatively sharp, but their EDGES should blend
+        # into the smoothed ground. We blur the stair_mask to create a 'fade' effect.
+        soft_stair_mask = scipy.ndimage.gaussian_filter(stair_mask.astype(float), sigma=2.0)
 
-        # Toggle grid material
-        floor_geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, 'floor')
-        grid_mat_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_MATERIAL, 'grid')
+        # result = (sharp_stairs * mask) + (smooth_ground * (1-mask))
+        final_grid = (soft_stair_mask * grid) + (1.0 - soft_stair_mask) * smoothed_grid
 
-        if floor_geom_id != -1 and grid_mat_id != -1:
-            is_flat = (mode == 'single' and choice == 'flat')
-            model.geom_matid[floor_geom_id] = grid_mat_id if is_flat else -1
+        # Normalize to [0, 1] range based on elevation_z
+        elevation_z = model.hfield_size[hfield_id][2]
+        model.hfield_data[:] = (final_grid.T / elevation_z).flatten()
 
     def save(self, grid: np.ndarray, filename: str) -> None:
         """
@@ -410,18 +462,20 @@ class TerrainGenerator:
                 img = np.mean(img[:, :, :3], axis=-1)
             return img.T
 
-    def get_height_at(self, model: mujoco.MjModel, x: float, y: float) -> float:
+    def get_height_at(self, model: mujoco.MjModel, hfield_id: int, x: float, y: float) -> float:
         """
         Samples the terrain height at a specific world coordinate (x, y)
 
         Args:
             model: MuJoCo model containing hfield data
+            hfield_id: Pre-cached ID of the 'terrain' hfield.
             x, y: World coordinates
 
         Returns:
             The interpolated height in meters
         """
-        hfield_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_HFIELD, 'terrain')
+        if hfield_id == -1:
+            return 0.0
 
         radius_x, radius_y, elevation_z, _ = model.hfield_size[hfield_id]
         ny = model.hfield_nrow[hfield_id]
@@ -435,7 +489,6 @@ class TerrainGenerator:
                 break
 
         # Map world (x, y) to local hfield indices [0, 1]
-        # local_x = (x - geom_center_x + radius_x) / (2 * radius_x)
         local_x = (x - geom_pos[0] + radius_x) / (2.0 * radius_x)
         local_y = (y - geom_pos[1] + radius_y) / (2.0 * radius_y)
 
@@ -447,8 +500,9 @@ class TerrainGenerator:
         iy = int(local_y * (ny - 1))
 
         # Retrieve data (MuJoCo buffer is row-major Y, then X)
+        # In newer MuJoCo versions, this is already normalized [0, 1] relative to elevation_z
         height_raw = model.hfield_data[iy * nx + ix]
 
         # Scale back to meters
-        # hfield_data is [0, 1], we multiply by elevation_z and add geom Z
+        # height = (hfield_data * elevation_z) + pos_z
         return height_raw * elevation_z + geom_pos[2]

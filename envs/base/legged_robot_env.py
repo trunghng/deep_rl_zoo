@@ -1,4 +1,4 @@
-import os
+import os, sys
 from os.path import abspath, dirname, join
 
 import gymnasium as gym
@@ -16,16 +16,22 @@ class LeggedRobotEnv(BaseEnv):
         scene_type=None,
         curriculum_mode=None,
         terrain_type=None,
+        use_camera=None,
+        use_privileged=None,
         **kwargs
     ):
         super().__init__(config=config, **kwargs)
 
+        if use_camera:
+            self.config.sensor.depth_camera.enabled = use_camera
+        if use_privileged:
+            self.config.privileged_info.enabled = use_privileged
         if scene_type:
             self.config.terrain.scene_type = scene_type
         if curriculum_mode:
             self.config.terrain.curriculum_mode = curriculum_mode
         if terrain_type:
-            self.config.terrain.single_terrain_type = terrain_type
+            self.config.terrain.terrain_type = terrain_type
 
         self.terrain_gen = TerrainGenerator(config=self.config)
         self.num_actions = len(self.config.init_state.default_joint_angles)
@@ -37,6 +43,11 @@ class LeggedRobotEnv(BaseEnv):
             self.config.sensor.depth_camera.height,
             self.config.sensor.depth_camera.width
         ))
+        self._hfield_id = -1
+
+    def _setup_terrain(self):
+        """Initializes terrain-related variables after the model is loaded"""
+        self._hfield_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_HFIELD, 'terrain')
 
     def _setup_renderer(self):
         """Initializes the renderer for depth camera after the model is loaded"""
@@ -71,33 +82,42 @@ class LeggedRobotEnv(BaseEnv):
 
         return self.current_depth_image
 
-    def _assemble_modular_xml(self, subclass_dir):
-        """Assembles robot and scene into a process-unique temporary file"""
+    def _initialize_simulation(self):
+        """Overrides Gymnasium's default file loader to build the model in RAM"""
         robot_xml_file = self.config.asset.file_name
         scene_type = self.config.terrain.scene_type
         scene_xml_file = f"{scene_type}.xml"
 
+        subclass_dir = dirname(abspath(sys.modules[self.__module__].__file__))
         robot_path = join(subclass_dir, robot_xml_file)
         assets_dir = join(dirname(dirname(abspath(__file__))), "assets")
         scene_path = join(assets_dir, scene_xml_file)
 
-        robot_name = self.__class__.__name__.lower()
-        
-        # Unique name using Process ID to avoid vectorized environment race conditions
-        pid = os.getpid()
-        self.temp_xml_path = join(subclass_dir, f"tmp_{robot_name}_{scene_type}_{pid}.xml")
-        combined_xml = f'<mujoco model="{robot_name}_{scene_type}">\n\t<include file="{robot_path}"/>\n\t<include file="{scene_path}"/>\n</mujoco>'
+        combined_xml = f"""
+        <mujoco model="{self.__class__.__name__.lower()}_{scene_type}">
+            <include file="{robot_xml_file}"/>
+            <include file="{scene_xml_file}"/>
+        </mujoco>
+        """
 
-        with open(self.temp_xml_path, 'w') as f:
-            f.write(combined_xml)
+        with open(robot_path, 'rb') as f: robot_content = f.read()
+        with open(scene_path, 'rb') as f: scene_content = f.read()
 
-        return self.temp_xml_path
+        virtual_assets = {
+            robot_xml_file: robot_content,
+            scene_xml_file: scene_content
+        }
+
+        self.model = mujoco.MjModel.from_xml_string(combined_xml, assets=virtual_assets)
+        self.data = mujoco.MjData(self.model)
+        return self.model, self.data
 
     def close(self):
-        """Clean up temporary files when env is closed"""
-        if hasattr(self, 'temp_xml_path') and self.temp_xml_path and os.path.exists(self.temp_xml_path):
+        """Clean up resources, including the off-screen renderer, when env is closed"""
+        if self.renderer is not None:
             try:
-                os.remove(self.temp_xml_path)
+                del self.renderer
+                self.renderer = None
             except Exception:
                 pass
         super().close()
@@ -168,15 +188,22 @@ class LeggedRobotEnv(BaseEnv):
 
     def reset_model(self):
         if hasattr(self, 'terrain_gen'):
-            self.terrain_gen.update_hfield(self.model, self.np_random)
+            self.terrain_gen.update_hfield(self.model, self._hfield_id, self.np_random)
+            self._needs_hfield_upload = True
+
+            # Sync the offscreen depth camera renderer immediately
+            if self.renderer is not None and self._hfield_id != -1:
+                con = getattr(self.renderer, '_mjr_context', None)
+                if con:
+                    mujoco.mjr_uploadHField(self.model, con, self._hfield_id)
 
         noise_low = -0.01
         noise_high = 0.01
         spawn_pos = list(self.config.init_state.pos)
-        
+
         # Dynamically adjust spawn height based on terrain
         if self.config.terrain.enabled and hasattr(self, 'terrain_gen') and self.terrain_gen:
-            ground_height = self.terrain_gen.get_height_at(self.model, spawn_pos[0], spawn_pos[1])
+            ground_height = self.terrain_gen.get_height_at(self.model, self._hfield_id, spawn_pos[0], spawn_pos[1])
             spawn_pos[2] += ground_height
 
         base_qpos = np.zeros(self.model.nq)
@@ -193,3 +220,26 @@ class LeggedRobotEnv(BaseEnv):
         self.last_action = np.zeros(self.num_actions)
         self.step_counter = 0
         return self._get_obs()
+
+    def render(self):
+        """Override render to fix the Phantom Terrain bug by syncing GPU memory"""
+        if getattr(self, '_needs_hfield_upload', False):
+            self._needs_hfield_upload = False
+            
+            if self._hfield_id != -1 and hasattr(self, 'mujoco_renderer'):
+                # Check for human mode
+                viewer = getattr(self.mujoco_renderer, 'viewer', None)
+                if viewer:
+                    con = getattr(viewer, 'con', None)
+                    if con: mujoco.mjr_uploadHField(self.model, con, self._hfield_id)
+                
+                # Check for rgb mode
+                renderer = getattr(self.mujoco_renderer, 'renderer', None)
+                if renderer:
+                    con = getattr(renderer, '_mjr_context', None)
+                    if not con:
+                        ctx = getattr(renderer, 'context', None)
+                        con = getattr(ctx, 'con', None) if ctx else None
+                    if con: mujoco.mjr_uploadHField(self.model, con, self._hfield_id)
+                
+        return super().render()

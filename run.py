@@ -6,7 +6,7 @@ import os.path as osp
 if __name__ == '__main__':
     sa_algos = ['ddpg', 'ppo', 'sac', 'trpo', 'vpg', 'dqn']
     ma_algos = ['maddpg']
-    utils = ['plot', 'test_policy']
+    utils = ['plot', 'test_policy', 'rma']
 
     assert len(sys.argv) > 1, 'Invalid command'
     cmd = sys.argv[1]

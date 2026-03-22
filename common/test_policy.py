@@ -5,6 +5,10 @@ from types import SimpleNamespace
 import gymnasium as gym
 from gymnasium.wrappers.vector import NormalizeObservation, RecordVideo
 import numpy as np
+from tqdm import tqdm
+
+from common.utils import get_algo_class
+import envs
 
 
 def test(args) -> None:
@@ -20,19 +24,6 @@ def test(args) -> None:
         config_dict['test_mode'] = True
         config = SimpleNamespace(**config_dict)
 
-    from zoo.single.ddpg import DDPG
-    from zoo.single.dqn import DQN
-    from zoo.single.ppo import PPO
-    from zoo.single.sac import SAC
-    from zoo.single.trpo import TRPO
-    from zoo.single.vpg import VPG
-
-    algos = {
-        'ddpg': DDPG, 'dqn': DQN,
-        'ppo': PPO, 'sac': SAC,
-        'trpo': TRPO, 'vpg': VPG
-    }
-
     if args.save_video:
         render_mode = 'rgb_array'
     elif args.render:
@@ -42,9 +33,16 @@ def test(args) -> None:
     env_kwargs = {}
     if hasattr(config, 'env_config') and 'terrain' in config.env_config:
         terrain_config = config.env_config['terrain']
-        env_kwargs['scene_type'] = terrain_config.get('scene_type')
-        env_kwargs['curriculum_mode'] = terrain_config.get('curriculum_mode')
-        env_kwargs['terrain_type'] = terrain_config.get('single_terrain_type')
+        priviledged_config = config.env_config['privileged_info']
+        depth_camera_config = config.env_config['sensor']['depth_camera']
+
+        env_kwargs = {
+            'scene_type': terrain_config.get('scene_type'),
+            'curriculum_mode': terrain_config.get('curriculum_mode'),
+            'terrain_type': terrain_config.get('terrain_type'),
+            'use_camera': depth_camera_config.get('enabled'),
+            'use_privileged': priviledged_config.get('enabled')
+        }
 
     env = gym.make_vec(
         config.env,
@@ -62,33 +60,38 @@ def test(args) -> None:
         print(f'🎬 Recording video to: {video_dir}')
         env = RecordVideo(env, video_folder=video_dir, episode_trigger=lambda x: True)
 
-    model = algos[config.algo](config)
+    algo_class = get_algo_class(config.algo)
+    model = algo_class(config)
     model_path = args.model_file if args.model_file else osp.join(log_dir, 'latest.pt')
     print(f'Loading weights from: {model_path}')
     model.load(model_path, env=env)
 
     returns, eps_len = [], []
     try:
-        for ep in range(1, args.eps + 1):
+        pbar_eps = tqdm(range(1, args.eps + 1), desc="Episodes")
+        for ep in pbar_eps:
             obs, _ = env.reset()
             ep_ret, ep_len = 0, 0
 
+            pbar_steps = tqdm(total=args.max_ep_len, desc=f"Episode {ep}", leave=False)
             while True:
                 action_results = model.select_action(obs, action_only=True, deterministic=True)
                 action = action_results[0] if isinstance(action_results, tuple) else action_results
                 obs, reward, terminated, truncated, _ = env.step(action)
                 ep_ret += reward[0]
                 ep_len += 1
+                pbar_steps.update(1)
 
                 if args.render and not args.save_video:
                     env.render()
                     render_fps = env.metadata.get("render_fps", 60)
                     time.sleep(1.0 / render_fps)
 
-                if terminated[0] or truncated[0] or ep_len == args.max_ep_len:
+                if terminated[0] or truncated[0] or ep_len >= args.max_ep_len:
                     returns.append(ep_ret)
                     eps_len.append(ep_len)
-                    print(f'Ep: {ep}\tReturn: {ep_ret:.4f}\tEpLen: {ep_len}')
+                    pbar_steps.close()
+                    tqdm.write(f'Ep: {ep}\tReturn: {ep_ret:.4f}\tEpLen: {ep_len}')
                     break
     finally:
         env.close()

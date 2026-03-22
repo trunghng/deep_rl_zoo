@@ -1,4 +1,4 @@
-from os.path import abspath, dirname
+from os.path import abspath, dirname, join
 
 from gymnasium.envs.mujoco import MujocoEnv
 from gymnasium.spaces import Box
@@ -31,6 +31,8 @@ class Bipedal(LeggedRobotEnv):
         scene_type=None,
         curriculum_mode=None,
         terrain_type=None,
+        use_camera=None,
+        use_privileged=None,
         **kwargs
     ):
         super().__init__(
@@ -38,29 +40,16 @@ class Bipedal(LeggedRobotEnv):
             scene_type=scene_type,
             curriculum_mode=curriculum_mode,
             terrain_type=terrain_type,
+            use_camera=use_camera,
+            use_privileged=use_privileged,
             **kwargs
         )
 
-        subclass_dir = dirname(abspath(__file__))
-        xml_path = self._assemble_modular_xml(subclass_dir)
-
-        # Each obs is joint of positions and velocities
-        # [0] Torso Z (1)
-        # [1:5] Torso orientation (4)
-        # [5:17] Toint pos relative to default (12)
-        # [17:23] Torso vel (6)
-        # [23:35] Joint vel (12)
-        # [35:39] Touch sensors (4)
-        # [39:42] Projected gravity vector (3)
-        obs_size = 42
-        if self.config.sensor.depth_camera.enabled:
-            img_size = self.config.sensor.depth_camera.width * self.config.sensor.depth_camera.height
-            obs_size += img_size
-        if hasattr(self.config, 'privileged_info') and self.config.privileged_info.enabled:
-            num_points = len(self.config.privileged_info.scan_points_x) * len(self.config.privileged_info.scan_points_y)
-            obs_size += num_points
+        obs_size = self.prop_dim + self.privileged_dim + self.vision_dim
         self.observation_space = Box(low=-np.inf, high=np.inf, shape=(obs_size,), dtype=np.float64)
 
+        subclass_dir = dirname(abspath(__file__))
+        xml_path = join(subclass_dir, self.config.asset.file_name)
         MujocoEnv.__init__(
             self,
             xml_path,
@@ -69,6 +58,7 @@ class Bipedal(LeggedRobotEnv):
             **kwargs,
         )
 
+        self._setup_terrain()
         joint_names = [
             'hip_x', 'hip_z', 'hip_y', 'knee', 'ankle', 'ankle', # left
             'hip_x', 'hip_z', 'hip_y', 'knee', 'ankle', 'ankle'  # right
@@ -102,6 +92,33 @@ class Bipedal(LeggedRobotEnv):
         self.left_foot_vel = np.zeros(2)    # Linear velocity (X, Y) of the left foot (m/s)
         self.right_foot_vel = np.zeros(2)   # Linear velocity (X, Y) of the right foot (m/s)
         self.stumble_force = 0.0            # Magnitude of horizontal impact force on feet (N)
+
+    @property
+    def prop_dim(self):
+        """Size of the proprioceptive vector (joints, velocities, orientation)
+        [0] Torso Z (1)
+        [1:5] Torso orientation (4)
+        [5:17] Toint pos relative to default (12)
+        [17:23] Torso vel (6)
+        [23:35] Joint vel (12)
+        [35:39] Touch sensors (4)
+        [39:42] Projected gravity vector (3)
+        """
+        return 42
+
+    @property
+    def privileged_dim(self):
+        """Size of the terrain height grid (if enabled)"""
+        if hasattr(self.config, 'privileged_info') and self.config.privileged_info.enabled:
+            return len(self.config.privileged_info.scan_points_x) * len(self.config.privileged_info.scan_points_y)
+        return 0
+
+    @property
+    def vision_dim(self):
+        """Total size of the flattened depth image (if enabled)"""
+        if self.config.sensor.depth_camera.enabled:
+            return self.config.sensor.depth_camera.width * self.config.sensor.depth_camera.height
+        return 0
 
     def _get_obs(self):
         # Proprioceptive data
@@ -144,9 +161,9 @@ class Bipedal(LeggedRobotEnv):
                         hx = torso_x + global_dx
                         hy = torso_y + global_dy
 
-                        ground_z = self.terrain_gen.get_height_at(self.model, hx, hy)
-                        # Store relative height to the foot
-                        terrain_heights.append(ground_z - foot_z)
+                        # Return absolute height relative to world z=0
+                        ground_z = self.terrain_gen.get_height_at(self.model, self._hfield_id, hx, hy)
+                        terrain_heights.append(ground_z)
             else:
                 num_points = len(self.config.privileged_info.scan_points_x) * len(self.config.privileged_info.scan_points_y)
                 terrain_heights = [0.0] * num_points
@@ -194,14 +211,16 @@ class Bipedal(LeggedRobotEnv):
         self.last_x_pos = torso_x
 
         # Heights
-        terrain_height = self.terrain_gen.get_height_at(self.model, torso_x, torso_y)\
+        terrain_height = self.terrain_gen.get_height_at(self.model, self._hfield_id, torso_x, torso_y)\
             if self.config.terrain.enabled and hasattr(self, 'terrain_gen') and self.terrain_gen else 0.0
         self.torso_height = torso_z - terrain_height
 
         left_foot_pos = self.data.geom('foot_left_geom').xpos
         right_foot_pos = self.data.geom('foot_right_geom').xpos
-        left_ground_z = self.terrain_gen.get_height_at(self.model, left_foot_pos[0], left_foot_pos[1]) if self.terrain_gen else 0.0
-        right_ground_z = self.terrain_gen.get_height_at(self.model, right_foot_pos[0], right_foot_pos[1]) if self.terrain_gen else 0.0
+        left_ground_z = self.terrain_gen.get_height_at(
+            self.model, self._hfield_id, left_foot_pos[0], left_foot_pos[1]) if self.terrain_gen else 0.0
+        right_ground_z = self.terrain_gen.get_height_at(
+            self.model, self._hfield_id, right_foot_pos[0], right_foot_pos[1]) if self.terrain_gen else 0.0
         self.left_foot_height = left_foot_pos[2] - left_ground_z
         self.right_foot_height = right_foot_pos[2] - right_ground_z
 
@@ -285,8 +304,7 @@ class Bipedal(LeggedRobotEnv):
         # Upright bonus: g_z = 1.0 => vertical; 0.0 => horizontal
         reward = 1.0 if self.g_z > 0.9 else (self.g_z if self.g_z > 0 else 0.0)
 
-        # Penalty for pitching (g_x is the world Z-axis projected on body X-axis)
-        # We penalize leaning too far forward (< -0.1) or backward (> 0.1)
+        # Penalizes leaning too far forward (< -0.1) or backward (> 0.1)
         if abs(self.g_x) > 0.1:
             reward -= 2.0 * abs(self.g_x)
         return reward
