@@ -38,14 +38,18 @@ class BaseLeggedConfig(BaseConfig):
             "rough", "stairs_up", "stairs_down", "hill", "pit"
         ]                               # Types to randomly spawn in grid mode
 
-        # Physical Dimensions (m)
+        # Adaptive Time-Based Curriculum
+        curriculum_start_step = 2_000_000 # Total environment steps before difficulty > 0
+        curriculum_end_step = 10_000_000  # Total environment steps at which difficulty = 1.0
+
+        # Physical Dimensions (m) - Treated as maximums scaled by difficulty fraction
         base_height = 0.0               # Base height of the floor (0.0 = world z=0)
-        roughness = 0.05                # Maximum height of random bumps
+        roughness = 0.1                 # Maximum height of random bumps
         step_height = 0.2               # Height of each stair step
         step_width_m = 0.4              # Depth of each stair step
         
         # Other settings
-        noise_scale = 0.1               # Downsampling ratio for roughness (0.1 = 1/10th resolution)
+        noise_scale = 0.2               # Downsampling ratio for roughness (higher = more dense)
         feature_margin = 0.1            # Margin before features start (10% of zone size)
         hill_sigma_range = (0.6, 1.0)   # Range for Gaussian sigma (m) - controls hill width
         taper_distance_m = 0.2          # Boundary tapering distance (m)

@@ -43,6 +43,7 @@ class LeggedRobotEnv(BaseEnv):
             self.config.sensor.depth_camera.height,
             self.config.sensor.depth_camera.width
         ))
+        self.difficulty_fraction = 1.0
         self._hfield_id = -1
 
     def _setup_terrain(self):
@@ -188,7 +189,9 @@ class LeggedRobotEnv(BaseEnv):
 
     def reset_model(self):
         if hasattr(self, 'terrain_gen'):
-            self.terrain_gen.update_hfield(self.model, self._hfield_id, self.np_random)
+            fraction = self.difficulty_fraction
+            is_test = getattr(self.config, 'test_mode', False)
+            self.terrain_gen.update_hfield(self.model, self._hfield_id, self.np_random, fraction, verbose=is_test)
             self._needs_hfield_upload = True
 
             # Sync the offscreen depth camera renderer immediately

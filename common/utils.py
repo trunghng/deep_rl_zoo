@@ -39,6 +39,27 @@ def setup_headless_rendering() -> None:
             os.environ['PYOPENGL_PLATFORM'] = 'egl'
 
 
+def update_terrain_curriculum(envs, total_steps: int) -> None:
+    """Updates the difficulty fraction of the environment based on training progress"""
+    if not hasattr(envs, 'unwrapped') or not hasattr(envs.unwrapped, 'envs'):
+        return
+
+    base_env = envs.unwrapped.envs[0].unwrapped
+    if not hasattr(base_env, 'config') or not hasattr(base_env.config, 'terrain'):
+        return
+
+    terrain_config = base_env.config.terrain
+    if not hasattr(terrain_config, 'curriculum_start_step'):
+        return
+
+    start_step = terrain_config.curriculum_start_step
+    end_step = terrain_config.curriculum_end_step
+
+    fraction = (total_steps - start_step) / max(1, end_step - start_step)
+    fraction = float(np.clip(fraction, 0.0, 1.0))
+    envs.set_attr('difficulty_fraction', fraction)
+
+
 def flatten(tensor):
     """Flatten tensor"""
     return torch.cat([t.contiguous().view(-1) for t in tensor])

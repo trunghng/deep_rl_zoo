@@ -3,7 +3,7 @@ from collections import defaultdict
 from typing import List, Tuple
 
 import gymnasium as gym
-from gymnasium.spaces import Space, Box, Discrete
+from gymnasium.spaces import Discrete
 from gymnasium.wrappers import ClipAction
 from gymnasium.wrappers.vector import NormalizeObservation, NormalizeReward, RecordEpisodeStatistics
 import torch
@@ -15,7 +15,7 @@ import wandb
 import common.mpi_utils as mpi
 from common.policy import CategoricalPolicy, DiagonalGaussianPolicy
 from common.vf import StateValueFunction
-from common.utils import set_seed, to_tensor, dim
+from common.utils import set_seed, to_tensor, dim, get_spaces, update_terrain_curriculum
 from common.buffer import VectorRolloutBuffer
 from common.logger import Logger
 from common.lr_schedulers import get_linear_scheduler
@@ -26,21 +26,20 @@ import envs.base.base_config as base_config
 class ActorCritic(nn.Module):
     
     def __init__(self,
-                obs_space: Space,
-                action_space: Space,
+                obs_dim: int,
+                act_dim: int,
+                is_discrete_action: bool,
                 hidden_sizes: List[int]=[64, 64],
                 activation: nn.Module=nn.Tanh,
                 device: str='cpu') -> None:
         super().__init__()
-        obs_dim = dim(obs_space)
-        action_dim = dim(action_space)
 
         # continous action space
-        if isinstance(action_space, Box):
-            self.actor = DiagonalGaussianPolicy(obs_dim, action_dim, hidden_sizes, activation).to(device)
+        if not is_discrete_action:
+            self.actor = DiagonalGaussianPolicy(obs_dim, act_dim, hidden_sizes, activation).to(device)
         # discrete action space
-        elif isinstance(action_space, Discrete):
-            self.actor = CategoricalPolicy(obs_dim, action_dim, hidden_sizes, activation).to(device)
+        else:
+            self.actor = CategoricalPolicy(obs_dim, act_dim, hidden_sizes, activation).to(device)
         self.critic = StateValueFunction(obs_dim, hidden_sizes, activation).to(device)
 
 
@@ -51,95 +50,113 @@ class PPO:
     """
 
     def __init__(self, args) -> None:
-        spec = gym.spec(args.env)
-        is_custom_env = spec.entry_point.startswith('envs.')
-        env_kwargs = {}
-        vec_mode = 'async'
-        if is_custom_env:
-            if args.scene_type: env_kwargs['scene_type'] = args.scene_type
-            if args.curriculum_mode: env_kwargs['curriculum_mode'] = args.curriculum_mode
-            if args.terrain_type: env_kwargs['terrain_type'] = args.terrain_type
-
-            config = base_config.BaseLeggedConfig()
-            if config.sensor.depth_camera.enabled:
-                vec_mode = 'sync'
-
-        self.envs = gym.make_vec(
-            args.env,
-            num_envs=args.n_envs,
-            vectorization_mode=vec_mode,
-            wrappers=[lambda env: ClipAction(env)],
-            **env_kwargs
-        )
-        if args.norm_obs:
-            self.envs = NormalizeObservation(self.envs)
-        if args.norm_rew:
-            self.envs = NormalizeReward(self.envs, gamma=args.gamma)
-        self.envs = RecordEpisodeStatistics(self.envs)
-        set_seed(args.seed + 10 * mpi.proc_rank())
-
-        if hasattr(self.envs, 'single_observation_space'):
-            observation_space = self.envs.single_observation_space
-            action_space = self.envs.single_action_space
-        else:
-            observation_space = self.envs.observation_space
-            action_space = self.envs.action_space
-
-        self.n_envs = args.n_envs
-        self.device = 'cuda:0' if torch.cuda.is_available() and args.cpu == 1 else 'cpu'
-        self.ac = ActorCritic(observation_space, action_space, args.hidden_sizes, device=self.device)
-        mpi.sync_params(self.ac)
-        self.actor_opt = Adam(self.ac.actor.parameters(), lr=args.pi_lr)
-        self.critic_opt = Adam(self.ac.critic.parameters(), lr=args.v_lr)
-        self.use_lr_decay = args.lr_decay
-        if self.use_lr_decay:
-            self.actor_scheduler = get_linear_scheduler(
-                self.actor_opt, warmup_steps=args.epochs // 20, training_steps=args.epochs
-            )
-            self.critic_scheduler = get_linear_scheduler(
-                self.critic_opt, warmup_steps=args.epochs // 20, training_steps=args.epochs
-            )
-        else:
-            self.actor_scheduler = None
-            self.critic_scheduler = None
-        self.epochs = args.epochs
-        self.proc_steps_per_epoch = int(args.steps_per_epoch / mpi.n_procs())
-        self.steps_per_epoch = args.steps_per_epoch
-        self.train_pi_iters = args.train_pi_iters
-        self.train_v_iters = args.train_v_iters
-        self.max_ep_len = args.max_ep_len
-        self.buffer = VectorRolloutBuffer(
-            obs_dim=dim(observation_space),
-            action_dim=dim(action_space),
-            size=self.proc_steps_per_epoch,
-            n_envs=args.n_envs,
-            gamma=args.gamma,
-            lamb=args.lamb
-        )
-        self.kl_target = args.kl_target
-        if args.clip:
-            self.clip_ratio = args.clip_ratio
-        else:
-            pass
-        self.ent_coef = args.ent_coef
-        self.enable_save = args.save
-        self.save_every = args.save_every
-        self.save_latest_only = args.save_latest_only
-        self.render = args.render
-        self.plot = args.plot
-
+        self.test_mode = getattr(args, 'test_mode', False)
+        self.envs = None
         wandb_id = None
-        self.start_epoch = 1
-        if args.resume:
-            checkpoint = self.load(args.resume)
-            wandb_id = checkpoint.get('wandb_id')
-            self.start_epoch = checkpoint.get('epoch', 0) + 1
-            mpi.mpi_print(f'Successfully loaded checkpoint from epoch {self.start_epoch - 1}')
+        
+        if self.test_mode and hasattr(args, 'obs_dim') and hasattr(args, 'act_dim'):
+            self.device = 'cuda:0' if torch.cuda.is_available() and getattr(args, 'cpu', 1) == 1 else 'cpu'
+            self.ac = ActorCritic(
+                obs_dim=args.obs_dim,
+                act_dim=args.act_dim,
+                is_discrete_action=getattr(args, 'is_discrete_action', False),
+                hidden_sizes=args.hidden_sizes,
+                device=self.device
+            )
+        else:
+            spec = gym.spec(args.env)
+            is_custom_env = spec.entry_point.startswith('envs.')
+            env_kwargs = {}
+            vec_mode = 'async'
+            if is_custom_env:
+                for key in ['scene_type', 'curriculum_mode', 'terrain_type', 'use_camera', 'use_privileged']:
+                    val = getattr(args, key, None)
+                    if val is not None:
+                        env_kwargs[key] = val
+                    if hasattr(args, key):
+                        delattr(args, key)
 
+                config = base_config.BaseLeggedConfig()
+                if env_kwargs.get('use_camera', config.sensor.depth_camera.enabled):
+                    vec_mode = 'sync'
+
+            self.envs = gym.make_vec(
+                args.env,
+                num_envs=args.n_envs,
+                vectorization_mode=vec_mode,
+                wrappers=[lambda env: ClipAction(env)],
+                **env_kwargs
+            )
+
+            if args.norm_obs:
+                self.envs = NormalizeObservation(self.envs)
+            if args.norm_rew:
+                self.envs = NormalizeReward(self.envs, gamma=args.gamma)
+            self.envs = RecordEpisodeStatistics(self.envs)
+            set_seed(args.seed + 10 * mpi.proc_rank())
+
+            observation_space, action_space = get_spaces(self.envs)
+            obs_dim, act_dim = dim(observation_space), dim(action_space)
+            self.device = 'cuda:0' if torch.cuda.is_available() and args.cpu == 1 else 'cpu'
+
+            self.ac = ActorCritic(
+                obs_dim=obs_dim,
+                act_dim=act_dim,
+                is_discrete_action=isinstance(action_space, Discrete),
+                hidden_sizes=args.hidden_sizes,
+                device=self.device
+            )
+            mpi.sync_params(self.ac)
+            self.actor_opt = Adam(self.ac.actor.parameters(), lr=args.pi_lr)
+            self.critic_opt = Adam(self.ac.critic.parameters(), lr=args.v_lr)
+            self.use_lr_decay = args.lr_decay
             if self.use_lr_decay:
-                for _ in range(self.start_epoch - 1):
-                    self.actor_scheduler.step()
-                    self.critic_scheduler.step()
+                self.actor_scheduler = get_linear_scheduler(
+                    self.actor_opt, warmup_steps=args.epochs // 20, training_steps=args.epochs
+                )
+                self.critic_scheduler = get_linear_scheduler(
+                    self.critic_opt, warmup_steps=args.epochs // 20, training_steps=args.epochs
+                )
+            else:
+                self.actor_scheduler = None
+                self.critic_scheduler = None
+
+            self.start_epoch = 1
+            if args.resume:
+                checkpoint = self.load(args.resume)
+                wandb_id = checkpoint.get('wandb_id')
+                self.start_epoch = checkpoint.get('epoch', 0) + 1
+                mpi.mpi_print(f'Successfully loaded checkpoint from epoch {self.start_epoch - 1}')
+
+                if self.use_lr_decay:
+                    for _ in range(self.start_epoch - 1):
+                        self.actor_scheduler.step()
+                        self.critic_scheduler.step()
+            self.epochs = args.epochs
+            self.proc_steps_per_epoch = int(args.steps_per_epoch / mpi.n_procs())
+            self.steps_per_epoch = args.steps_per_epoch
+            self.train_pi_iters = args.train_pi_iters
+            self.train_v_iters = args.train_v_iters
+            self.max_ep_len = args.max_ep_len
+            self.buffer = VectorRolloutBuffer(
+                obs_dim=obs_dim,
+                action_dim=act_dim,
+                size=self.proc_steps_per_epoch,
+                n_envs=args.n_envs,
+                gamma=args.gamma,
+                lamb=args.lamb
+            )
+            self.kl_target = args.kl_target
+            if args.clip:
+                self.clip_ratio = args.clip_ratio
+            else:
+                pass
+            self.ent_coef = args.ent_coef
+            self.enable_save = args.save
+            self.save_every = args.save_every
+            self.save_latest_only = args.save_latest_only
+            self.render = args.render
+            self.plot = args.plot
 
         if args.exp_name:
             exp_name = args.exp_name
@@ -151,8 +168,8 @@ class PPO:
         config_dict['wandb_id'] = wandb_id
         config_dict['device'] = self.device
         self.logger = Logger(log_dir=log_dir, config=config_dict)
-        self.logger.save_config(config_dict)
-        if args.resume:
+        self.logger.save_config(config_dict, env=self.envs)
+        if args.resume and not self.test_mode:
             self.logger.truncate_log(self.start_epoch - 1)
 
     def update_params(self) -> None:
@@ -254,8 +271,9 @@ class PPO:
         checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         self.ac.actor.load_state_dict(checkpoint['actor'])
         self.ac.critic.load_state_dict(checkpoint['critic'])
-        self.actor_opt.load_state_dict(checkpoint['actor_opt'])
-        self.critic_opt.load_state_dict(checkpoint['critic_opt'])
+        if not self.test_mode:
+            self.actor_opt.load_state_dict(checkpoint['actor_opt'])
+            self.critic_opt.load_state_dict(checkpoint['critic_opt'])
 
         target_env = env if env is not None else self.envs
 
@@ -277,6 +295,9 @@ class PPO:
         observations, _ = self.envs.reset() # (B, O)
         try:
             for epoch in range(self.start_epoch, self.epochs + 1):
+                total_steps = (epoch - 1) * self.steps_per_epoch
+                update_terrain_curriculum(self.envs, total_steps)
+
                 epoch_returns, epoch_lengths = [], []
                 env_info_dict = defaultdict(list)
 
@@ -410,6 +431,10 @@ if __name__ == '__main__':
     parser.add_argument('--terrain-type', type=str, default=None,
                         choices=['random', 'rough', 'stairs_up', 'stairs_down', 'hill', 'pit'],
                         help='Specific terrain type for single mode (for custom envs)')
+    parser.add_argument('--use-camera', action='store_true',
+                        help='Enable depth camera')
+    parser.add_argument('--use-privileged', action='store_true',
+                        help='Enable privileged info')
     parser.add_argument('--use-wandb', action='store_true',
                         help='Use Weights & Biases logging')
     parser.add_argument('--resume', type=str, default=None,
