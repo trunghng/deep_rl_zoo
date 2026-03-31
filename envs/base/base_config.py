@@ -1,3 +1,6 @@
+import numpy as np
+
+
 class BaseConfig:
     pass
 
@@ -30,7 +33,7 @@ class BaseLeggedConfig(BaseConfig):
         enabled = True                  # Toggle terrain generation on/off
         scene_type = "arena"            # Default scene
         curriculum_mode = "grid"        # Default mode
-        terrain_type = "flat"           # Default type
+        terrain_type = "random"         # Default type (Required for Adaptive Curriculum)
         nx_zones = 5                    # Number of zones along X-axis
         ny_zones = 5                    # Number of zones along Y-axis
         spawn_zone = (2, 2)             # Default spawn zone
@@ -39,8 +42,8 @@ class BaseLeggedConfig(BaseConfig):
         ]                               # Types to randomly spawn in grid mode
 
         # Adaptive Time-Based Curriculum
-        curriculum_start_step = 2_000_000 # Total environment steps before difficulty > 0
-        curriculum_end_step = 10_000_000  # Total environment steps at which difficulty = 1.0
+        curriculum_start_step = 1000000 # Total environment steps before difficulty > 0
+        curriculum_end_step = 5000000   # Total environment steps at which difficulty = 1.0
 
         # Physical Dimensions (m) - Treated as maximums scaled by difficulty fraction
         base_height = 0.0               # Base height of the floor (0.0 = world z=0)
@@ -74,8 +77,8 @@ class BaseLeggedConfig(BaseConfig):
     class privileged_info:
         """Data given to the Teacher policy"""
         enabled = False
-        scan_points_x = [0.1, 0.3, 0.5]   # Default forward points (m)
-        scan_points_y = [-0.2, 0.0, 0.2]  # Default lateral points (m)
+        scan_points_x = np.linspace(-0.5, 1.2, 9)  # Default forward points (m)
+        scan_points_y = np.linspace(-0.6, 0.6, 9)  # Default lateral points (m)
 
     class rewards:
         """Reward settings"""

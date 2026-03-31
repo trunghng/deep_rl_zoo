@@ -69,13 +69,16 @@ class Bipedal(LeggedRobotEnv):
         # State variables (updated every step)
         self.current_torques = np.zeros(self.num_actions) # Instantaneous torques applied to all motors
         self.current_action = np.zeros(self.num_actions)  # The most recent target joint angles from the agent
+        self.gait_period = 0.6              # Time for a full step cycle (s)
+        self.left_phase = 0.0
+        self.right_phase = 0.0
         self.g_x = 0.0                      # World Z-axis projected on torso's local X-axis
+        self.g_y = 0.0                      # World Z-axis projected on torso's local Y-axis
         self.g_z = 0.0                      # World Z-axis projected on torso's local Z-axis
         self.lin_vel_x = 0.0                # Current forward linear velocity (m/s)
         self.lin_vel_y = 0.0                # Current lateral linear velocity (m/s)
         self.lin_vel_z = 0.0                # Current vertical linear velocity (m/s)
         self.ang_vel_z = 0.0                # Current angular velocity around world Z-axis (rad/s)
-        self.progress = 0.0                 # Distance traveled forward in the current step (m)
         self.last_x_pos = 0.0               # Global X position of torso in the previous frame (m)
         self.torso_height = 0.0             # Height of torso relative to the local terrain (m)
         self.left_foot_height = 0.0         # Height of left foot relative to the local terrain (m)
@@ -85,10 +88,6 @@ class Bipedal(LeggedRobotEnv):
         self.knee_contact = False           # Whether knees are touching ground
         self.left_foot_contact = False      # Whether left foot is touching any surface
         self.right_foot_contact = False     # Whether right foot is touching any surface
-        self.left_touchdown = False         # Whether left foot hits ground in the current frame but didn't in the last one
-        self.right_touchdown = False        # Whether right foot hits ground in the current frame but didn't in the last one
-        self.left_air_time = 0.0            # Time elapsed since the left foot last touched the ground (s)
-        self.right_air_time = 0.0           # Time elapsed since the right foot last touched the ground (s)
         self.left_foot_vel = np.zeros(2)    # Linear velocity (X, Y) of the left foot (m/s)
         self.right_foot_vel = np.zeros(2)   # Linear velocity (X, Y) of the right foot (m/s)
         self.stumble_force = 0.0            # Magnitude of horizontal impact force on feet (N)
@@ -103,8 +102,9 @@ class Bipedal(LeggedRobotEnv):
         [23:35] Joint vel (12)
         [35:39] Touch sensors (4)
         [39:42] Projected gravity vector (3)
+        [42:46] Phase clock
         """
-        return 42
+        return 46
 
     @property
     def privileged_dim(self):
@@ -125,6 +125,12 @@ class Bipedal(LeggedRobotEnv):
         torso_rotation_matrix = self.data.xmat[self.model.body('torso').id].reshape(3, 3)
         gravity_vector = torso_rotation_matrix[2, :]
         rel_joint_pos = self.data.qpos[7:] - self.config.init_state.default_joint_angles
+        phase_clock = np.array([
+            np.sin(2 * np.pi * self.left_phase),
+            np.cos(2 * np.pi * self.left_phase),
+            np.sin(2 * np.pi * self.right_phase),
+            np.cos(2 * np.pi * self.right_phase)
+        ])
 
         proprioception = np.concatenate([
             self.data.qpos.flat[2:7],
@@ -132,7 +138,8 @@ class Bipedal(LeggedRobotEnv):
             self.data.qvel.flat[:6],
             self.data.qvel.flat[6:],
             self.data.sensordata.flat,
-            gravity_vector
+            gravity_vector,
+            phase_clock
         ])
 
         obs_parts = [proprioception]
@@ -141,12 +148,7 @@ class Bipedal(LeggedRobotEnv):
         if hasattr(self.config, 'privileged_info') and self.config.privileged_info.enabled:
             terrain_heights = []
             if self.config.terrain.enabled and hasattr(self, 'terrain_gen') and self.terrain_gen:
-                torso_x, torso_y = self.data.qpos[0], self.data.qpos[1]
-
-                # Get the lowest foot height to act as relative zero
-                foot_left_z = self.data.geom('foot_left_geom').xpos[2]
-                foot_right_z = self.data.geom('foot_right_geom').xpos[2]
-                foot_z = min(foot_left_z, foot_right_z)
+                torso_x, torso_y, torso_z = self.data.qpos[0:3]
 
                 # Calculate yaw from the rotation matrix
                 yaw = np.arctan2(torso_rotation_matrix[1, 0], torso_rotation_matrix[0, 0])
@@ -161,9 +163,8 @@ class Bipedal(LeggedRobotEnv):
                         hx = torso_x + global_dx
                         hy = torso_y + global_dy
 
-                        # Return absolute height relative to world z=0
                         ground_z = self.terrain_gen.get_height_at(self.model, self._hfield_id, hx, hy)
-                        terrain_heights.append(ground_z)
+                        terrain_heights.append(ground_z - torso_z)
             else:
                 num_points = len(self.config.privileged_info.scan_points_x) * len(self.config.privileged_info.scan_points_y)
                 terrain_heights = [0.0] * num_points
@@ -180,11 +181,6 @@ class Bipedal(LeggedRobotEnv):
     def reset_model(self):
         obs = super().reset_model()
         self.last_x_pos = self.data.qpos[0]
-        self.progress = 0.0
-        self.left_air_time = 0.0
-        self.right_air_time = 0.0
-        self.left_touchdown = False
-        self.right_touchdown = False
         self.stumble_force = 0.0
         return obs
 
@@ -196,18 +192,20 @@ class Bipedal(LeggedRobotEnv):
         self.current_torques = torques
         self.current_action = action
 
+        # Calculate global phase from 0.0 to 1.0
+        global_phase = (self.data.time % self.gait_period) / self.gait_period
+        self.left_phase = global_phase
+        self.right_phase = (global_phase + 0.5) % 1.0
+
         # Orientation
-        self.g_x = observation[39]
-        self.g_z = observation[41]
+        self.g_x, self.g_y, self.g_z = observation[39:42]
 
         # Velocities
         self.lin_vel_x, self.lin_vel_y, self.lin_vel_z = self.data.qvel[0:3]
         self.ang_vel_z = self.data.qvel[5]
 
-        # Position & progress
-        torso_x, torso_y, torso_z = self.data.qpos[0], self.data.qpos[1], self.data.qpos[2]
-        # Distance moved since the previous frame
-        self.progress = torso_x - self.last_x_pos
+        # Position
+        torso_x, torso_y, torso_z = self.data.qpos[0:3]
         self.last_x_pos = torso_x
 
         # Heights
@@ -238,16 +236,6 @@ class Bipedal(LeggedRobotEnv):
         self.left_foot_contact = touch_data[2] > 0
         self.right_foot_contact = touch_data[3] > 0
 
-        # Air time tracking
-        if not self.left_foot_contact:
-            self.left_air_time += self.dt  # Increment timer if foot is in the air
-
-        if not self.right_foot_contact:
-            self.right_air_time += self.dt
-
-        self.left_touchdown = self.left_foot_contact and not prev_left_contact
-        self.right_touchdown = self.right_foot_contact and not prev_right_contact
-
         # Foot linear velocity in X/Y plane (m/s), used for foot slip penalty
         foot_left_body_id = self.model.body('foot_left').id
         foot_right_body_id = self.model.body('foot_right').id
@@ -261,7 +249,10 @@ class Bipedal(LeggedRobotEnv):
 
         for i in range(self.data.ncon):
             contact = self.data.contact[i]
-            if contact.geom1 in [foot_left_geom_id, foot_right_geom_id] or contact.geom2 in [foot_left_geom_id, foot_right_geom_id]:
+            is_left = (contact.geom1 == foot_left_geom_id) or (contact.geom2 == foot_left_geom_id)
+            is_right = (contact.geom1 == foot_right_geom_id) or (contact.geom2 == foot_right_geom_id)
+
+            if is_left or is_right:
                 # Get the contact force vector
                 c_array = np.zeros(6, dtype=np.float64)
                 mujoco.mj_contactForce(self.model, self.data, i, c_array)
@@ -273,9 +264,11 @@ class Bipedal(LeggedRobotEnv):
                 f_xy = np.linalg.norm(f_world[:2])  # Horizontal impact
                 f_z = abs(f_world[2])               # Vertical load
 
-                # Penalty if horizontal force is > 2x the vertical load (indicates kicking a wall)
                 if f_xy > 2.0 * f_z:
-                    self.stumble_force += f_xy
+                    if is_left and self.left_phase >= 0.5:      # Left is supposed to be swinging
+                        self.stumble_force += f_xy
+                    elif is_right and self.right_phase >= 0.5:  # Right is supposed to be swinging
+                        self.stumble_force += f_xy
 
     def _get_termination(self) -> bool:
         return bool(
@@ -300,13 +293,14 @@ class Bipedal(LeggedRobotEnv):
         return np.sum(np.square(self.current_action - self.last_action))
 
     def _reward_upright(self):
-        """Rewards keeping the torso perfectly vertical and penalizes leaning backward"""
+        """Rewards keeping the torso perfectly vertical and penalizes leaning forward/backward or sideways"""
         # Upright bonus: g_z = 1.0 => vertical; 0.0 => horizontal
         reward = 1.0 if self.g_z > 0.9 else (self.g_z if self.g_z > 0 else 0.0)
 
-        # Penalizes leaning too far forward (< -0.1) or backward (> 0.1)
-        if abs(self.g_x) > 0.1:
-            reward -= 2.0 * abs(self.g_x)
+        # Penalizes leaning too far forward/backward (g_x) or sideways (g_y)
+        total_tilt = np.sqrt(np.square(self.g_x) + np.square(self.g_y))
+        if total_tilt > 0.1:
+            reward -= 2.0 * total_tilt
         return reward
 
     def _reward_tracking_lin_vel(self):
@@ -329,10 +323,6 @@ class Bipedal(LeggedRobotEnv):
         """Penalizes twisting of the torso (yaw spinning)"""
         return np.square(self.ang_vel_z)
 
-    def _reward_progress(self):
-        """Rewards the agent for absolute distance traveled along the X-axis"""
-        return self.progress
-
     def _reward_alive(self):
         """Rewards staying upright and above the ground"""
         return 1.0 if (self.torso_height > self.config.rewards.base_height_target) else 0.0
@@ -345,33 +335,33 @@ class Bipedal(LeggedRobotEnv):
         """Penalizes agent for knee-walking"""
         return 1.0 if self.knee_contact else 0.0
 
-    def _reward_air_time(self):
-        """Rewards holding the foot in the air for an optimal duration before stepping"""
+    def _reward_gait_phase(self):
+        """Rewards the agent for synchronizing foot contacts with the phase clock"""
         reward = 0.0
-        target_air_time = 0.5
+        left_desired_contact = 1.0 if self.left_phase < 0.5 else 0.0
+        left_actual_contact = 1.0 if self.left_foot_contact else 0.0
+        right_desired_contact = 1.0 if self.right_phase < 0.5 else 0.0
+        right_actual_contact = 1.0 if self.right_foot_contact else 0.0
 
-        if self.left_touchdown:
-            reward += np.exp(-np.square(self.left_air_time - target_air_time) / 0.1)
-            self.left_air_time = 0.0
-
-        if self.right_touchdown:
-            reward += np.exp(-np.square(self.right_air_time - target_air_time) / 0.1)
-            self.right_air_time = 0.0
+        # Penalizes the difference between desired and actual contact states
+        reward += np.square(left_desired_contact - left_actual_contact)
+        reward += np.square(right_desired_contact - right_actual_contact)
         return reward
 
-    def _reward_symmetry(self):
-        """Rewards alternating feet (left, then right)"""
-        return 1.0 if (self.left_foot_contact ^ self.right_foot_contact) else 0.0
-
     def _reward_swing(self):
-        """Rewards lifting a foot near the ideal target height during a step"""
+        """Rewards lifting the foot to follow a dynamic phase-based target arc"""
         reward = 0.0
-        if not self.left_foot_contact and self.right_foot_contact:
-            error = self.left_foot_height - self.config.rewards.swing_height_target
-            reward += np.exp(-np.square(error) / 0.01)
-        if not self.right_foot_contact and self.left_foot_contact:
-            error = self.right_foot_height - self.config.rewards.swing_height_target
-            reward += np.exp(-np.square(error) / 0.01)
+        if self.left_phase >= 0.5:
+            # Calculate target height along the sine wave
+            left_target_height = self.config.rewards.swing_height_target * np.sin(2 * np.pi * (self.left_phase - 0.5))
+            # Error is only positive if the actual foot height is below the target arc
+            left_error = np.maximum(0.0, left_target_height - self.left_foot_height)
+            reward += np.exp(-np.square(left_error) / 0.01)
+
+        if self.right_phase >= 0.5:
+            right_target_height = self.config.rewards.swing_height_target * np.sin(2 * np.pi * (self.right_phase - 0.5))
+            right_error = np.maximum(0.0, right_target_height - self.right_foot_height)
+            reward += np.exp(-np.square(right_error) / 0.01)
         return reward
 
     def _reward_foot_slip(self):

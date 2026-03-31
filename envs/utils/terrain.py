@@ -292,9 +292,6 @@ class TerrainGenerator:
         if not self.config.terrain.enabled or hfield_id == -1:
             return
 
-        # Double the fraction to increase difficulty progression speed
-        fraction = float(np.clip(fraction * 2.0, 0.0, 1.0))
-
         ny, nx = model.hfield_nrow[hfield_id], model.hfield_ncol[hfield_id]
         radius_x = model.hfield_size[hfield_id][0]
         m_per_px = (2.0 * radius_x) / nx

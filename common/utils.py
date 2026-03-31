@@ -1,7 +1,7 @@
 import random
 import os
 import platform
-from typing import Callable, List, Tuple
+from typing import Callable, List, Tuple, Any
 
 import gymnasium as gym
 from gymnasium.spaces import Space, Box, Discrete
@@ -31,7 +31,7 @@ def setup_headless_rendering() -> None:
         mujoco.set_mju_user_warning(silence_mujoco_warning)
     except ImportError:
         pass
-    
+
     if platform.system() == 'Linux':
         if 'MUJOCO_GL' not in os.environ:
             os.environ['MUJOCO_GL'] = 'egl'
@@ -39,25 +39,30 @@ def setup_headless_rendering() -> None:
             os.environ['PYOPENGL_PLATFORM'] = 'egl'
 
 
-def update_terrain_curriculum(envs, total_steps: int) -> None:
-    """Updates the difficulty fraction of the environment based on training progress"""
-    if not hasattr(envs, 'unwrapped') or not hasattr(envs.unwrapped, 'envs'):
-        return
+def get_base_env(env: Any, return_vector: bool = True) -> Any:
+    """
+    Digs through wrappers to find the base environment.
+    :param return_vector: If True, returns the VectorEnv (for get_attr/set_attr).
+                         If False, returns the first sub-env (for direct attribute access).
+    """
+    current_env = env
+    while hasattr(current_env, 'env'):
+        current_env = current_env.env
 
-    base_env = envs.unwrapped.envs[0].unwrapped
-    if not hasattr(base_env, 'config') or not hasattr(base_env.config, 'terrain'):
-        return
+    if not return_vector and hasattr(current_env, 'envs'):
+        return current_env.envs[0].unwrapped
+    return current_env
 
-    terrain_config = base_env.config.terrain
-    if not hasattr(terrain_config, 'curriculum_start_step'):
-        return
 
+def update_terrain_curriculum(envs, total_steps: int) -> float:
+    base_env = get_base_env(envs)
+    terrain_config = base_env.get_attr('config')[0].terrain
     start_step = terrain_config.curriculum_start_step
     end_step = terrain_config.curriculum_end_step
-
     fraction = (total_steps - start_step) / max(1, end_step - start_step)
     fraction = float(np.clip(fraction, 0.0, 1.0))
-    envs.set_attr('difficulty_fraction', fraction)
+    base_env.set_attr('difficulty_fraction', fraction)
+    return fraction
 
 
 def flatten(tensor):

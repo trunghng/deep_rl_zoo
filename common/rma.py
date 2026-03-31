@@ -12,7 +12,7 @@ import torch.optim as Adam
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 
-from common.utils import get_algo_class
+from common.utils import get_algo_class, get_base_env
 
 
 class StudentNetwork(nn.Module):
@@ -110,16 +110,8 @@ class FusedPolicy(nn.Module):
 class RMA:
 
     @staticmethod
-    def get_base_env(env: Any) -> Any:
-        if hasattr(env, 'unwrapped'):
-            if hasattr(env.unwrapped, 'envs'):
-                return env.unwrapped.envs[0].unwrapped
-            return env.unwrapped
-        return env
-
-    @staticmethod
     def collect_data(model: Any, env: Any, num_steps: int, dataset_path: str) -> None:
-        base_env = RMA.get_base_env(env)
+        base_env = get_base_env(env, return_vector=False)
         prop_dim, priv_dim = base_env.prop_dim, base_env.privileged_dim
         depth_images, terrain_heights = [], []
         obs, _ = env.reset()  # (1, prop_dim + priv_dim + cam_w * cam_h)
@@ -203,7 +195,7 @@ class RMA:
             render_mode="rgb_array",
             **env_kwargs
         )
-        base_env = RMA.get_base_env(env)
+        base_env = get_base_env(env, return_vector=False)
 
         video_folder = join(teacher_log_dir, 'videos')
         env = RecordVideo(

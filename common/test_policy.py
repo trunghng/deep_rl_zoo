@@ -64,7 +64,7 @@ def test(args) -> None:
     model = algo_class(config)
     model_path = args.model_file if args.model_file else osp.join(log_dir, 'latest.pt')
     print(f'Loading weights from: {model_path}')
-    model.load(model_path, env=env)
+    model.load(model_path, env=env, difficulty_override=args.difficulty_fraction)
 
     returns, eps_len = [], []
     try:
@@ -113,6 +113,8 @@ if __name__ == '__main__':
                        help='Number of episodes to test')
     parser.add_argument('--max-ep-len', type=int, default=1000,
                        help='Maximum length of an episode')
+    parser.add_argument('--difficulty-fraction', type=float, default=None,
+                       help='Override terrain difficulty (0.0 to 1.0)')
     group = parser.add_mutually_exclusive_group()
     group.add_argument('--render', action='store_true',
                        help='Render the agent live')

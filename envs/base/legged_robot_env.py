@@ -16,6 +16,7 @@ class LeggedRobotEnv(BaseEnv):
         scene_type=None,
         curriculum_mode=None,
         terrain_type=None,
+        difficulty_fraction=None,
         use_camera=None,
         use_privileged=None,
         **kwargs
@@ -43,7 +44,7 @@ class LeggedRobotEnv(BaseEnv):
             self.config.sensor.depth_camera.height,
             self.config.sensor.depth_camera.width
         ))
-        self.difficulty_fraction = 1.0
+        self.difficulty_fraction = difficulty_fraction if difficulty_fraction is not None else 1.0
         self._hfield_id = -1
 
     def _setup_terrain(self):
