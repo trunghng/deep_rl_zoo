@@ -3,7 +3,7 @@ import os.path as osp
 from types import SimpleNamespace
 
 import gymnasium as gym
-from gymnasium.wrappers.vector import NormalizeObservation, RecordVideo
+from gymnasium.wrappers.vector import NormalizeObservation, NormalizeReward, RecordVideo
 import numpy as np
 from tqdm import tqdm
 
@@ -54,6 +54,8 @@ def test(args) -> None:
 
     if getattr(config, 'norm_obs', False):
         env = NormalizeObservation(env)
+    if getattr(config, 'norm_rew', False):
+        env = NormalizeReward(env)
 
     if args.save_video:
         video_dir = osp.join(args.log_dir, 'videos')

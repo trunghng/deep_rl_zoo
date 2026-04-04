@@ -4,7 +4,7 @@ class BipedWalkingConfig(BipedConfig):
 
     class rewards(BipedConfig.rewards):
         class scales:
-            tracking_lin_vel = 4.0     
+            tracking_lin_vel = 5.0     
 
             # Form and Posture (Prevent "crab walking" or twisting)
             drift = -2.0               # Penalty for drifting sideways
@@ -17,11 +17,11 @@ class BipedWalkingConfig(BipedConfig):
             # Stability and Form
             upright = 2.0              # Bonus for keeping the torso perfectly vertical
             gait_phase = -1.5          # Penalty for feet not matching the phase clock
-            swing = 1.0                # Bonus for lifting a foot high into the air
+            swing = 2.0                # Bonus for lifting a foot high into the air
 
             # Advanced Physics (Crucial for complex terrain)
-            foot_slip = -0.03          # Penalty if the foot moves horizontally while touching the ground
-            stumble = -0.03            # Massive penalty for hitting vertical obstacles (stair lips)
+            foot_slip = -0.5           # Penalty if the foot moves horizontally while touching the ground
+            stumble = -1.0             # Massive penalty for hitting vertical obstacles (stair lips)
             bounce = -0.1              # Penalty for bouncing (too high prevents climbing hills)
 
             # Safety and Efficiency

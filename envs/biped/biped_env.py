@@ -242,7 +242,7 @@ class Bipedal(LeggedRobotEnv):
         self.left_foot_vel = self.data.cvel[foot_left_body_id][3:5]
         self.right_foot_vel = self.data.cvel[foot_right_body_id][3:5]
 
-        # Stumble detection (Friction cone)
+        # Stumble detection (Surface Normal Analysis)
         self.stumble_force = 0.0
         foot_left_geom_id = self.model.geom('foot_left_geom').id
         foot_right_geom_id = self.model.geom('foot_right_geom').id
@@ -253,22 +253,28 @@ class Bipedal(LeggedRobotEnv):
             is_right = (contact.geom1 == foot_right_geom_id) or (contact.geom2 == foot_right_geom_id)
 
             if is_left or is_right:
-                # Get the contact force vector
-                c_array = np.zeros(6, dtype=np.float64)
-                mujoco.mj_contactForce(self.model, self.data, i, c_array)
-
-                # Transform to world coordinates to separate Horizontal vs Vertical force
+                # The contact frame's X-axis is the contact normal vector
                 frame = contact.frame.reshape(3, 3)
-                f_world = frame.T @ c_array[:3]
+                normal = frame[0] 
 
-                f_xy = np.linalg.norm(f_world[:2])  # Horizontal impact
-                f_z = abs(f_world[2])               # Vertical load
+                # Threshold of 0.8 treats any slope steeper than ~37 degrees as a stumbling hazard
+                is_sloped_obstacle = abs(normal[2]) < 0.8
 
-                if f_xy > 2.0 * f_z:
-                    if is_left and self.left_phase >= 0.5:      # Left is supposed to be swinging
-                        self.stumble_force += f_xy
-                    elif is_right and self.right_phase >= 0.5:  # Right is supposed to be swinging
-                        self.stumble_force += f_xy
+                if is_sloped_obstacle:
+                    # c_array[0] is the normal force pushing against that sloped surface
+                    c_array = np.zeros(6, dtype=np.float64)
+                    mujoco.mj_contactForce(self.model, self.data, i, c_array)
+
+                    # Use the world-space horizontal component of this impact force
+                    # to measure how hard it halted forward momentum
+                    f_world = frame.T @ c_array[:3]
+                    impact_horizontal = np.linalg.norm(f_world[:2])
+
+                    # Penalizes only if the foot was supposed to be swinging
+                    if is_left and self.left_phase >= 0.5:
+                        self.stumble_force += impact_horizontal
+                    elif is_right and self.right_phase >= 0.5:
+                        self.stumble_force += impact_horizontal
 
     def _get_termination(self) -> bool:
         return bool(

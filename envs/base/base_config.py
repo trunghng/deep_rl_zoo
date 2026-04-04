@@ -77,8 +77,8 @@ class BaseLeggedConfig(BaseConfig):
     class privileged_info:
         """Data given to the Teacher policy"""
         enabled = False
-        scan_points_x = np.linspace(-0.5, 1.2, 9)  # Default forward points (m)
-        scan_points_y = np.linspace(-0.6, 0.6, 9)  # Default lateral points (m)
+        scan_points_x = np.linspace(-0.5, 1.2, 7)  # Default forward points (m)
+        scan_points_y = np.linspace(-0.6, 0.6, 7)  # Default lateral points (m)
 
     class rewards:
         """Reward settings"""

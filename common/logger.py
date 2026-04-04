@@ -45,15 +45,22 @@ class Logger:
             self.first_row = not exists
 
             if self.use_wandb:
-                wandb.init(
-                    project='drl_zoo',
-                    id=self.wandb_id,
-                    resume='allow',
-                    config=self.config,
-                    name=self.config.get('exp_name', None),
-                    monitor_gym=True,
-                    save_code=True
-                )
+                wandb_kwargs = {
+                    'project': 'drl_zoo',
+                    'config': self.config,
+                    'name': self.config.get('exp_name', None),
+                    'monitor_gym': True,
+                    'save_code': True
+                }
+                if config.get('fork_from_str'):
+                    wandb_kwargs['fork_from'] = config['fork_from_str']
+                elif config.get('resume_from_str'):
+                    wandb_kwargs['id'] = self.wandb_id
+                    wandb_kwargs['resume_from'] = config['resume_from_str']
+                elif self.wandb_id is not None:
+                    wandb_kwargs['id'] = self.wandb_id
+                    wandb_kwargs['resume'] = 'allow'
+                wandb.init(**wandb_kwargs)
         else:
             self.log_dir = None
             self.log_file = None

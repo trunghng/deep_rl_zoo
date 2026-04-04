@@ -122,10 +122,26 @@ class PPO:
                 self.critic_scheduler = None
 
             self.start_epoch = 1
-            if args.resume:
-                checkpoint = self.load(args.resume)
-                wandb_id = checkpoint.get('wandb_id')
+            checkpoint_path = args.resume or args.fork or args.rewind
+            resume_from_str, fork_from_str = None, None
+
+            if checkpoint_path:
+                checkpoint = self.load(checkpoint_path)
                 self.start_epoch = checkpoint.get('epoch', 0) + 1
+                loaded_wandb_id = checkpoint.get('wandb_id')
+
+                if args.resume:
+                    wandb_id = loaded_wandb_id
+                if args.fork:
+                    if loaded_wandb_id:
+                        fork_step = self.start_epoch - 2
+                        fork_from_str = f'{loaded_wandb_id}?_step={fork_step}'
+                    wandb_id = None
+                else:
+                    if loaded_wandb_id:
+                        rewind_step = self.start_epoch - 2
+                        resume_from_str = f'{loaded_wandb_id}?_step={rewind_step}'
+                    wandb_id = loaded_wandb_id
                 mpi.mpi_print(f'Successfully loaded checkpoint from epoch {self.start_epoch - 1}')
 
                 if self.use_lr_decay:
@@ -166,7 +182,10 @@ class PPO:
         config_dict = vars(args)
         config_dict['algo'] = 'ppo'
         config_dict['wandb_id'] = wandb_id
+        config_dict['start_epoch'] = self.start_epoch
         config_dict['device'] = self.device
+        config_dict['resume_from_str'] = resume_from_str
+        config_dict['fork_from_str'] = fork_from_str
         self.logger = Logger(log_dir=log_dir, config=config_dict)
         self.logger.save_config(config_dict, env=self.envs)
         if args.resume and not self.test_mode:
@@ -467,8 +486,6 @@ if __name__ == '__main__':
                         help='Enable privileged info')
     parser.add_argument('--use-wandb', action='store_true',
                         help='Use Weights & Biases logging')
-    parser.add_argument('--resume', type=str, default=None,
-                        help='Path to checkpoint to resume from')
     parser.add_argument('--save', action='store_true',
                         help='Save the final model')
     parser.add_argument('--save-every', type=int, default=10,
@@ -479,6 +496,13 @@ if __name__ == '__main__':
                         help='Render the training result')
     parser.add_argument('--plot', action='store_true',
                         help=' Plot the statistics')
+    checkpoint_group = parser.add_mutually_exclusive_group()
+    checkpoint_group.add_argument('--resume', type=str, default=None,
+                                  help='Path to checkpoint to resume from (continues the same W&B run)')
+    checkpoint_group.add_argument('--fork', type=str, default=None,
+                                  help='Path to checkpoint to fork from (starts a new W&B run linked to the old one)')
+    checkpoint_group.add_argument('--rewind', type=str, default=None,
+                                  help='Path to checkpoint to rewind from (erases W&B history after this point)')
     args = parser.parse_args()
     if args.clip and not args.clip_ratio:
         parser.error('Argument --clip-ratio is required when --clip is enabled.')
