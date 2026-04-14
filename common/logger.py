@@ -45,22 +45,39 @@ class Logger:
             self.first_row = not exists
 
             if self.use_wandb:
-                wandb_kwargs = {
-                    'project': 'drl_zoo',
-                    'config': self.config,
-                    'name': self.config.get('exp_name', None),
-                    'monitor_gym': True,
-                    'save_code': True
-                }
-                if config.get('fork_from_str'):
-                    wandb_kwargs['fork_from'] = config['fork_from_str']
-                elif config.get('resume_from_str'):
-                    wandb_kwargs['id'] = self.wandb_id
-                    wandb_kwargs['resume_from'] = config['resume_from_str']
-                elif self.wandb_id is not None:
-                    wandb_kwargs['id'] = self.wandb_id
-                    wandb_kwargs['resume'] = 'allow'
-                wandb.init(**wandb_kwargs)
+                run_tags = []
+                if config.get('run_type') == 'fork':
+                    run_tags.append('forked')
+                elif config.get('run_type') == 'rewind':
+                    run_tags.append('rewound')
+
+                wandb.init(
+                    project='drl_zoo',
+                    id=self.wandb_id,
+                    resume='allow',
+                    config=self.config,
+                    name=self.config.get('exp_name', None),
+                    tags=run_tags if run_tags else None,
+                    monitor_gym=True,
+                    save_code=True
+                )
+
+                parent_id = config.get('parent_wandb_id')
+                if parent_id and self.wandb_id is None:
+                    mpi_print(f"📥 Fetching historical data from parent run {parent_id}...")
+                    api = wandb.Api()
+                    run_path = f"{wandb.run.entity}/{wandb.run.project}/{parent_id}"
+                    parent_run = api.run(run_path)
+                    target_epoch = config.get('start_epoch', 1) - 1
+                    history = parent_run.scan_history()
+                    rows_logged = 0
+                    for row in history:
+                        # Only grab rows up to the fork/rewind point
+                        if 'epoch' in row and row['epoch'] <= target_epoch:
+                            # Filter out W&B internal keys (they start with '_')
+                            clean_row = {k: v for k, v in row.items() if not k.startswith('_')}
+                            wandb.log(clean_row)
+                            rows_logged += 1
         else:
             self.log_dir = None
             self.log_file = None

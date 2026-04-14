@@ -15,7 +15,7 @@ import wandb
 import common.mpi_utils as mpi
 from common.policy import CategoricalPolicy, DiagonalGaussianPolicy
 from common.vf import StateValueFunction
-from common.utils import set_seed, to_tensor, dim, get_spaces, update_terrain_curriculum
+from common.utils import set_seed, to_tensor, dim, get_spaces, get_base_env
 from common.buffer import VectorRolloutBuffer
 from common.logger import Logger
 from common.lr_schedulers import get_linear_scheduler
@@ -69,7 +69,7 @@ class PPO:
             env_kwargs = {}
             vec_mode = 'async'
             if self.is_custom_env:
-                for key in ['scene_type', 'curriculum_mode', 'terrain_type', 'use_camera', 'use_privileged']:
+                for key in ['use_camera', 'use_privileged']:
                     val = getattr(args, key, None)
                     if val is not None:
                         env_kwargs[key] = val
@@ -123,7 +123,7 @@ class PPO:
 
             self.start_epoch = 1
             checkpoint_path = args.resume or args.fork or args.rewind
-            resume_from_str, fork_from_str = None, None
+            parent_wandb_id = None
 
             if checkpoint_path:
                 checkpoint = self.load(checkpoint_path)
@@ -132,16 +132,9 @@ class PPO:
 
                 if args.resume:
                     wandb_id = loaded_wandb_id
-                if args.fork:
-                    if loaded_wandb_id:
-                        fork_step = self.start_epoch - 2
-                        fork_from_str = f'{loaded_wandb_id}?_step={fork_step}'
+                elif args.fork or args.rewind:
                     wandb_id = None
-                else:
-                    if loaded_wandb_id:
-                        rewind_step = self.start_epoch - 2
-                        resume_from_str = f'{loaded_wandb_id}?_step={rewind_step}'
-                    wandb_id = loaded_wandb_id
+                    parent_wandb_id = loaded_wandb_id
                 mpi.mpi_print(f'Successfully loaded checkpoint from epoch {self.start_epoch - 1}')
 
                 if self.use_lr_decay:
@@ -182,10 +175,15 @@ class PPO:
         config_dict = vars(args)
         config_dict['algo'] = 'ppo'
         config_dict['wandb_id'] = wandb_id
-        config_dict['start_epoch'] = self.start_epoch
-        config_dict['device'] = self.device
-        config_dict['resume_from_str'] = resume_from_str
-        config_dict['fork_from_str'] = fork_from_str
+        if not self.test_mode:
+            config_dict['start_epoch'] = self.start_epoch
+            config_dict['device'] = self.device
+            if parent_wandb_id:
+                config_dict['parent_wandb_id'] = parent_wandb_id 
+                if args.rewind:
+                    config_dict['run_type'] = 'rewind'
+                elif args.fork:
+                    config_dict['run_type'] = 'fork'
         self.logger = Logger(log_dir=log_dir, config=config_dict)
         self.logger.save_config(config_dict, env=self.envs)
         if args.resume and not self.test_mode:
@@ -262,7 +260,7 @@ class PPO:
         return actions.cpu().numpy(), log_probs.cpu().numpy().flatten(), values.cpu().numpy().flatten()
 
     def save(self, epoch: int):
-        obs_rms, return_rms, difficulty_fraction = None, None, None
+        obs_rms, return_rms = None, None
         current_env = self.envs
         while True:
             if hasattr(current_env, 'obs_rms'):
@@ -274,7 +272,7 @@ class PPO:
             current_env = current_env.env
 
         if self.is_custom_env:
-            difficulty_fraction = current_env.get_attr('difficulty_fraction')[0]
+            terrain_levels = current_env.get_attr('terrain_levels')[0]
 
         state = {
             'epoch': epoch,
@@ -284,14 +282,14 @@ class PPO:
             'critic_opt': self.critic_opt.state_dict(),
             'obs_rms': obs_rms,
             'return_rms': return_rms,
-            'difficulty_fraction': difficulty_fraction,
+            'terrain_levels': terrain_levels,
             'wandb_id': wandb.run.id if (self.logger.use_wandb and mpi.proc_rank() == 0) else None
         }
         self.logger.save_latest(state)
         if not self.save_latest_only and epoch % self.save_every == 0:
             self.logger.save_state(state, epoch)
 
-    def load(self, checkpoint_path: str, env=None, difficulty_override=None) -> dict:
+    def load(self, checkpoint_path: str, env=None) -> dict:
         checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         self.ac.actor.load_state_dict(checkpoint['actor'])
         self.ac.critic.load_state_dict(checkpoint['critic'])
@@ -302,23 +300,18 @@ class PPO:
         target_env = env if env is not None else self.envs
 
         if target_env:
-            final_difficulty = difficulty_override
-            if final_difficulty is None:
-                final_difficulty = checkpoint.get('difficulty_fraction')
+            terrain_levels = checkpoint.get('terrain_levels')
 
-            if final_difficulty is not None:
-                mpi.mpi_print(f'Setting terrain difficulty to: {final_difficulty}')
+            if terrain_levels is not None and not self.test_mode:
+                mpi.mpi_print(f'Restoring terrain levels: {terrain_levels}')
 
             current_env = target_env
             while True:
-                if final_difficulty is not None:
+                if terrain_levels is not None and not self.test_mode:
                     if hasattr(current_env, 'set_attr'):
-                        current_env.set_attr('difficulty_fraction', final_difficulty)
-                    if hasattr(current_env, 'difficulty_fraction'):
-                        try:
-                            current_env.difficulty_fraction = final_difficulty
-                        except AttributeError:
-                            pass
+                        current_env.set_attr('terrain_levels', terrain_levels)
+                    if hasattr(current_env, 'terrain_levels'):
+                        current_env.terrain_levels = terrain_levels
 
                 # Restore normalization statistics
                 if 'obs_rms' in checkpoint and hasattr(current_env, 'obs_rms'):
@@ -390,9 +383,9 @@ class PPO:
                 self.logger.log_epoch('entropy', average_only=True)
 
                 if self.is_custom_env:
-                    self.logger.log_epoch(
-                        'difficulty-fraction', update_terrain_curriculum(self.envs, total_steps)
-                    )
+                    terrain_levels = get_base_env(self.envs).get_attr('terrain_levels')[0]
+                    for terrain_type, level in terrain_levels.items():
+                        self.logger.log_epoch(f"level-{terrain_type.replace('_', '-')}", level)
 
                 if env_info_dict:
                     for key in env_info_dict.keys():
@@ -471,15 +464,6 @@ if __name__ == '__main__':
                         help='Normalize observations')
     parser.add_argument('--norm-rew', action='store_true',
                         help='Normalize rewards')
-    parser.add_argument('--scene-type', type=str, default=None, choices=['arena', 'lane'],
-                        help='Terrain scene type (for custom envs)')
-    parser.add_argument('--curriculum-mode', type=str, default=None, choices=['grid', 'single'],
-                        help='Curriculum mode (for custom envs)')
-    parser.add_argument('--terrain-type', type=str, default=None,
-                        choices=['random', 'rough', 'stairs_up', 'stairs_down', 'hill', 'pit'],
-                        help='Specific terrain type for single mode (for custom envs)')
-    parser.add_argument('--difficulty-fraction', type=float, default=None,
-                        help='Manual difficulty fraction (0.0 to 1.0) for custom envs')
     parser.add_argument('--use-camera', action='store_true',
                         help='Enable depth camera')
     parser.add_argument('--use-privileged', action='store_true',

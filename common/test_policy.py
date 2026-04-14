@@ -36,12 +36,22 @@ def test(args) -> None:
         priviledged_config = config.env_config['privileged_info']
         depth_camera_config = config.env_config['sensor']['depth_camera']
 
+        if hasattr(args, 'terrains') and args.terrains is not None:
+            terrain_config['lane_terrain_types'] = args.terrains[0] if len(args.terrains) == 1 else args.terrains
+        else:
+            terrain_config['lane_terrain_types'] = None
+            
+        if hasattr(args, 'difficulties') and args.difficulties is not None:
+            diffs = [float(d) for d in args.difficulties]
+            terrain_config['lane_difficulties'] = diffs[0] if len(diffs) == 1 else diffs
+        else:
+            terrain_config['lane_difficulties'] = None
+
         env_kwargs = {
-            'scene_type': terrain_config.get('scene_type'),
-            'curriculum_mode': terrain_config.get('curriculum_mode'),
-            'terrain_type': terrain_config.get('terrain_type'),
             'use_camera': depth_camera_config.get('enabled'),
-            'use_privileged': priviledged_config.get('enabled')
+            'use_privileged': priviledged_config.get('enabled'),
+            'lane_terrain_types': terrain_config['lane_terrain_types'],
+            'lane_difficulties': terrain_config['lane_difficulties']
         }
 
     env = gym.make_vec(
@@ -66,7 +76,7 @@ def test(args) -> None:
     model = algo_class(config)
     model_path = args.model_file if args.model_file else osp.join(log_dir, 'latest.pt')
     print(f'Loading weights from: {model_path}')
-    model.load(model_path, env=env, difficulty_override=args.difficulty_fraction)
+    model.load(model_path, env=env)
 
     returns, eps_len = [], []
     try:
@@ -115,8 +125,10 @@ if __name__ == '__main__':
                        help='Number of episodes to test')
     parser.add_argument('--max-ep-len', type=int, default=1000,
                        help='Maximum length of an episode')
-    parser.add_argument('--difficulty-fraction', type=float, default=None,
-                       help='Override terrain difficulty (0.0 to 1.0)')
+    parser.add_argument('--terrains', nargs='*', default=None,
+                       help='List of terrain types or "random"')
+    parser.add_argument('--difficulties', nargs='*', default=None,
+                       help='List of difficulties (0.0 to 1.0) or "random"')
     group = parser.add_mutually_exclusive_group()
     group.add_argument('--render', action='store_true',
                        help='Render the agent live')

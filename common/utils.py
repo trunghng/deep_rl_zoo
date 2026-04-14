@@ -54,17 +54,6 @@ def get_base_env(env: Any, return_vector: bool = True) -> Any:
     return current_env
 
 
-def update_terrain_curriculum(envs, total_steps: int) -> float:
-    base_env = get_base_env(envs)
-    terrain_config = base_env.get_attr('config')[0].terrain
-    start_step = terrain_config.curriculum_start_step
-    end_step = terrain_config.curriculum_end_step
-    fraction = (total_steps - start_step) / max(1, end_step - start_step)
-    fraction = float(np.clip(fraction, 0.0, 1.0))
-    base_env.set_attr('difficulty_fraction', fraction)
-    return fraction
-
-
 def flatten(tensor):
     """Flatten tensor"""
     return torch.cat([t.contiguous().view(-1) for t in tensor])

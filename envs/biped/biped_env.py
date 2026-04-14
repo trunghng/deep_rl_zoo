@@ -28,18 +28,16 @@ class Bipedal(LeggedRobotEnv):
     def __init__(
         self,
         config=BipedConfig(),
-        scene_type=None,
-        curriculum_mode=None,
-        terrain_type=None,
+        lane_terrain_types=None,
+        lane_difficulties=None,
         use_camera=None,
         use_privileged=None,
         **kwargs
     ):
         super().__init__(
             config=config,
-            scene_type=scene_type,
-            curriculum_mode=curriculum_mode,
-            terrain_type=terrain_type,
+            lane_terrain_types=lane_terrain_types,
+            lane_difficulties=lane_difficulties,
             use_camera=use_camera,
             use_privileged=use_privileged,
             **kwargs
@@ -163,7 +161,7 @@ class Bipedal(LeggedRobotEnv):
                         hx = torso_x + global_dx
                         hy = torso_y + global_dy
 
-                        ground_z = self.terrain_gen.get_height_at(self.model, self._hfield_id, hx, hy)
+                        ground_z = self.terrain_gen.get_height_at(hx, hy)
                         terrain_heights.append(ground_z - torso_z)
             else:
                 num_points = len(self.config.privileged_info.scan_points_x) * len(self.config.privileged_info.scan_points_y)
@@ -209,16 +207,14 @@ class Bipedal(LeggedRobotEnv):
         self.last_x_pos = torso_x
 
         # Heights
-        terrain_height = self.terrain_gen.get_height_at(self.model, self._hfield_id, torso_x, torso_y)\
+        terrain_height = self.terrain_gen.get_height_at(torso_x, torso_y)\
             if self.config.terrain.enabled and hasattr(self, 'terrain_gen') and self.terrain_gen else 0.0
         self.torso_height = torso_z - terrain_height
 
         left_foot_pos = self.data.geom('foot_left_geom').xpos
         right_foot_pos = self.data.geom('foot_right_geom').xpos
-        left_ground_z = self.terrain_gen.get_height_at(
-            self.model, self._hfield_id, left_foot_pos[0], left_foot_pos[1]) if self.terrain_gen else 0.0
-        right_ground_z = self.terrain_gen.get_height_at(
-            self.model, self._hfield_id, right_foot_pos[0], right_foot_pos[1]) if self.terrain_gen else 0.0
+        left_ground_z = self.terrain_gen.get_height_at(left_foot_pos[0], left_foot_pos[1]) if self.terrain_gen else 0.0
+        right_ground_z = self.terrain_gen.get_height_at(right_foot_pos[0], right_foot_pos[1]) if self.terrain_gen else 0.0
         self.left_foot_height = left_foot_pos[2] - left_ground_z
         self.right_foot_height = right_foot_pos[2] - right_ground_z
 
@@ -368,6 +364,20 @@ class Bipedal(LeggedRobotEnv):
             right_target_height = self.config.rewards.swing_height_target * np.sin(2 * np.pi * (self.right_phase - 0.5))
             right_error = np.maximum(0.0, right_target_height - self.right_foot_height)
             reward += np.exp(-np.square(right_error) / 0.01)
+        return reward
+
+    def _reward_foot_velocity(self):
+        """Rewards the swing foot for moving forward relative to the torso."""
+        reward = 0.0
+        # During swing phase, we want the foot moving forward
+        if self.left_phase >= 0.5:
+            # Check velocity of left foot relative to the robot's base velocity
+            # We want the foot to be 'reaching' forward
+            rel_vel = self.left_foot_vel[0] - self.lin_vel_x
+            reward += np.clip(rel_vel, 0, 1.0)
+        if self.right_phase >= 0.5:
+            rel_vel = self.right_foot_vel[0] - self.lin_vel_x
+            reward += np.clip(rel_vel, 0, 1.0)
         return reward
 
     def _reward_foot_slip(self):

@@ -13,12 +13,10 @@ class LeggedRobotEnv(BaseEnv):
     def __init__(
         self,
         config,
-        scene_type=None,
-        curriculum_mode=None,
-        terrain_type=None,
-        difficulty_fraction=None,
         use_camera=None,
         use_privileged=None,
+        lane_terrain_types=None,
+        lane_difficulties=None,
         **kwargs
     ):
         super().__init__(config=config, **kwargs)
@@ -27,14 +25,11 @@ class LeggedRobotEnv(BaseEnv):
             self.config.sensor.depth_camera.enabled = use_camera
         if use_privileged:
             self.config.privileged_info.enabled = use_privileged
-        if scene_type:
-            self.config.terrain.scene_type = scene_type
-        if curriculum_mode:
-            self.config.terrain.curriculum_mode = curriculum_mode
-        if terrain_type:
-            self.config.terrain.terrain_type = terrain_type
+        if lane_terrain_types is not None:
+            self.config.terrain.lane_terrain_types = lane_terrain_types
+        if lane_difficulties is not None:
+            self.config.terrain.lane_difficulties = lane_difficulties
 
-        self.terrain_gen = TerrainGenerator(config=self.config)
         self.num_actions = len(self.config.init_state.default_joint_angles)
         self.last_action = np.zeros(self.num_actions)
         self.step_counter = 0
@@ -44,12 +39,32 @@ class LeggedRobotEnv(BaseEnv):
             self.config.sensor.depth_camera.height,
             self.config.sensor.depth_camera.width
         ))
-        self.difficulty_fraction = difficulty_fraction if difficulty_fraction is not None else 1.0
+        
+        self.terrain_levels = {t: 0 for t in self.config.terrain.terrain_types}
+        self.terrain_row = 0
+        self.spawn_x = 0.0
+        self.spawn_y = 0.0
         self._hfield_id = -1
 
     def _setup_terrain(self):
         """Initializes terrain-related variables after the model is loaded"""
         self._hfield_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_HFIELD, 'terrain')
+
+        if self.config.terrain.enabled and self._hfield_id != -1:
+            self.terrain_gen = TerrainGenerator(self.model, self._hfield_id, self.config)
+
+            if not getattr(self.config, 'test_mode', False):
+                self.terrain_gen.generate_arena()
+            else:
+                self.terrain_gen.generate_lane()
+            self.terrain_gen._apply_to_mujoco()
+
+            if self.renderer is not None:
+                con = getattr(self.renderer, '_mjr_context', None)
+                if con:
+                    mujoco.mjr_uploadHField(self.model, con, self._hfield_id)
+        else:
+            self.terrain_gen = None
 
     def _setup_renderer(self):
         """Initializes the renderer for depth camera after the model is loaded"""
@@ -87,7 +102,7 @@ class LeggedRobotEnv(BaseEnv):
     def _initialize_simulation(self):
         """Overrides Gymnasium's default file loader to build the model in RAM"""
         robot_xml_file = self.config.asset.file_name
-        scene_type = self.config.terrain.scene_type
+        scene_type = 'lane' if getattr(self.config, 'test_mode', False) else 'arena'
         scene_xml_file = f"{scene_type}.xml"
 
         subclass_dir = dirname(abspath(sys.modules[self.__module__].__file__))
@@ -189,25 +204,36 @@ class LeggedRobotEnv(BaseEnv):
         return observation, total_reward, terminated, False, info
 
     def reset_model(self):
-        if hasattr(self, 'terrain_gen'):
-            fraction = self.difficulty_fraction
-            is_test = getattr(self.config, 'test_mode', False)
-            self.terrain_gen.update_hfield(self.model, self._hfield_id, self.np_random, fraction, verbose=is_test)
-            self._needs_hfield_upload = True
+        if self.config.terrain.enabled and self.terrain_gen:
+            if not getattr(self.config, 'test_mode', False):
+                distance_walked = self.data.qpos[0] - self.spawn_x
 
-            # Sync the offscreen depth camera renderer immediately
-            if self.renderer is not None and self._hfield_id != -1:
-                con = getattr(self.renderer, '_mjr_context', None)
-                if con:
-                    mujoco.mjr_uploadHField(self.model, con, self._hfield_id)
+                current_terrain_type = self.config.terrain.terrain_types[self.terrain_row]
+                current_level = self.terrain_levels[current_terrain_type]
 
-        noise_low = -0.01
-        noise_high = 0.01
+                percentage_walked = distance_walked / self.terrain_gen.cell_length_x
+
+                if percentage_walked > self.config.terrain.curriculum_promote_fraction:
+                    self.terrain_levels[current_terrain_type] = min(self.config.terrain.num_levels - 1, current_level + 1)
+                elif percentage_walked < self.config.terrain.curriculum_demote_fraction:
+                    self.terrain_levels[current_terrain_type] = max(0, current_level - 1)
+
+                self.terrain_row = self.np_random.integers(0, len(self.config.terrain.terrain_types))
+                next_terrain_type = self.config.terrain.terrain_types[self.terrain_row]
+                next_level = self.terrain_levels[next_terrain_type]
+
+                self.spawn_x, self.spawn_y = self.terrain_gen.get_spawn_location(self.terrain_row, next_level)
+            else:
+                self.spawn_x, self.spawn_y = self.terrain_gen.get_spawn_location(0, 0)
+
+        noise_low, noise_high = -0.01, 0.01
         spawn_pos = list(self.config.init_state.pos)
 
-        # Dynamically adjust spawn height based on terrain
-        if self.config.terrain.enabled and hasattr(self, 'terrain_gen') and self.terrain_gen:
-            ground_height = self.terrain_gen.get_height_at(self.model, self._hfield_id, spawn_pos[0], spawn_pos[1])
+        # Add the teleport offset and find the local ground height
+        if self.config.terrain.enabled and self.terrain_gen:
+            spawn_pos[0] += self.spawn_x
+            spawn_pos[1] += self.spawn_y
+            ground_height = self.terrain_gen.get_height_at(spawn_pos[0], spawn_pos[1])
             spawn_pos[2] += ground_height
 
         base_qpos = np.zeros(self.model.nq)

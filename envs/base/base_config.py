@@ -31,38 +31,26 @@ class BaseLeggedConfig(BaseConfig):
     class terrain:
         """Terrain generation settings"""
         enabled = True                  # Toggle terrain generation on/off
-        scene_type = "arena"            # Default scene
-        curriculum_mode = "grid"        # Default mode
-        terrain_type = "random"         # Default type (Required for Adaptive Curriculum)
-        nx_zones = 5                    # Number of zones along X-axis
-        ny_zones = 5                    # Number of zones along Y-axis
-        spawn_zone = (2, 2)             # Default spawn zone
+        num_levels = 5
+        num_lane_cells = 5
         terrain_types = [
-            "rough", "stairs_up", "stairs_down", "hill", "pit"
-        ]                               # Types to randomly spawn in grid mode
-
-        # Adaptive Time-Based Curriculum
-        curriculum_start_step = 1000000 # Total environment steps before difficulty > 0
-        curriculum_end_step = 5000000   # Total environment steps at which difficulty = 1.0
+            "rough", "stairs_up", "stairs_down", "hill", "trench"
+        ]
 
         # Physical Dimensions (m) - Treated as maximums scaled by difficulty fraction
-        base_height = 0.0               # Base height of the floor (0.0 = world z=0)
+        base_height = 4.0               # Base height of the floor (to allow pits/trenches)
         roughness = 0.1                 # Maximum height of random bumps
         step_height = 0.2               # Height of each stair step
-        step_width_m = 0.4              # Depth of each stair step
+        step_width = 0.4                # Depth of each stair step
+        hill_height = 0.5
         
+        # Curriculum settings
+        curriculum_promote_fraction = 0.8
+        curriculum_demote_fraction = 0.4
+
         # Other settings
         noise_scale = 0.2               # Downsampling ratio for roughness (higher = more dense)
-        feature_margin = 0.1            # Margin before features start (10% of zone size)
-        hill_sigma_range = (0.6, 1.0)   # Range for Gaussian sigma (m) - controls hill width
-        taper_distance_m = 0.2          # Boundary tapering distance (m)
-        texture_amplitude = 0.01        # Hill surface jitter amplitude
-        blend_distance_m = 0.6          # Distance for smoothing clearing edges (m)
-        stair_step_range = (2, 5)       # Randomization range for number of steps (min, max+1)
-        hill_height_range = (0.3, 0.5)  # Randomization range for hill/pit height
-        spawn_lock_size_m = 2.5         # Increased: 5m total flat runway (2.5m front/back)
-        spawn_lock_blend_m = 0.5        # Blending distance for spawn zone edge (m)
-        global_sigma = 0.8              # Global Gaussian filter strength (pixel-wise)
+        feature_margin = 0.25           # Margin before features start (20% of zone size)
 
     class sensor:
 

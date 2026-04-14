@@ -61,7 +61,15 @@ class VisionDataset(Dataset):
 
 class FusedPolicy(nn.Module):
 
-    def __init__(self, student: nn.Module, teacher: Any, prop_dim: int, priv_dim: int, img_shape: Tuple[int, int], obs_rms: Any = None) -> None:
+    def __init__(
+        self,
+        student: nn.Module,
+        teacher: Any,
+        prop_dim: int,
+        priv_dim: int,
+        img_shape: Tuple[int, int],
+        obs_rms: Any = None
+    ) -> None:
         super().__init__()
         self.student = student
         self.teacher = teacher
@@ -177,23 +185,13 @@ class RMA:
         config_dict['test_mode'] = True
         config = SimpleNamespace(**config_dict)
 
-        env_kwargs = {}
-        if 'env_config' in config_dict and 'terrain' in config_dict['env_config']:
-            terrain_config = config_dict['env_config']['terrain']
-            env_kwargs = {
-                'scene_type': terrain_config.get('scene_type'),
-                'curriculum_mode': terrain_config.get('curriculum_mode'),
-                'terrain_type': terrain_config.get('terrain_type')
-            }
-
         env = gym.make_vec(
             config.env,
             num_envs=1,
             vectorization_mode='sync',
             use_camera=True,
             use_privileged=False,
-            render_mode="rgb_array",
-            **env_kwargs
+            render_mode="rgb_array"
         )
         base_env = get_base_env(env, return_vector=False)
 
@@ -264,14 +262,6 @@ def main() -> None:
         with open(join(collect_args.log_dir, 'config.json')) as f:
             config_dict = json.load(f)
 
-        env_kwargs = {}
-        if 'env_config' in config_dict and 'terrain' in config_dict['env_config']:
-            terrain_config = config_dict['env_config']['terrain']
-            env_kwargs = {
-                'scene_type': terrain_config.get('scene_type'),
-                'curriculum_mode': terrain_config.get('curriculum_mode'),
-                'terrain_type': terrain_config.get('terrain_type')
-            }
         config_dict['test_mode'] = True
         config = SimpleNamespace(**config_dict)
         model = get_algo_class(config.algo)(config)
@@ -281,8 +271,7 @@ def main() -> None:
             config.env,
             num_envs=1,
             use_camera=True,
-            use_privileged=True,
-            **env_kwargs
+            use_privileged=True
         )
 
         dataset_path = join(collect_args.log_dir, collect_args.out_file)

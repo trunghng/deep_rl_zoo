@@ -1,6 +1,6 @@
 <mujoco model="arena">
     <asset>
-        <hfield name="terrain" nrow="200" ncol="200" size="10 10 2.0 0.1"/>
+        <hfield name="terrain" nrow="400" ncol="800" size="20 10 8.0 0.1"/>
     </asset>
 
     <worldbody>

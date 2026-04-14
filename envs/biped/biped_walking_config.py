@@ -18,10 +18,11 @@ class BipedWalkingConfig(BipedConfig):
             upright = 2.0              # Bonus for keeping the torso perfectly vertical
             gait_phase = -1.5          # Penalty for feet not matching the phase clock
             swing = 2.0                # Bonus for lifting a foot high into the air
+            foot_velocity = 2.0
 
             # Advanced Physics (Crucial for complex terrain)
-            foot_slip = -0.5           # Penalty if the foot moves horizontally while touching the ground
-            stumble = -1.0             # Massive penalty for hitting vertical obstacles (stair lips)
+            foot_slip = -0.03           # Penalty if the foot moves horizontally while touching the ground
+            stumble = -0.2             # Massive penalty for hitting vertical obstacles (stair lips)
             bounce = -0.1              # Penalty for bouncing (too high prevents climbing hills)
 
             # Safety and Efficiency
