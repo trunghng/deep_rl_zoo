@@ -1,4 +1,4 @@
-gymnasium[robotics,atari,accept-rom-license]>=0.29.1
+gymnasium[robotics,atari]>=0.29.1
 pettingzoo[mpe]>=1.24.0
 mujoco>=3.1.1
 numpy>=1.26.0

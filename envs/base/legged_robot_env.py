@@ -44,6 +44,8 @@ class LeggedRobotEnv(BaseEnv):
         self.terrain_row = 0
         self.spawn_x = 0.0
         self.spawn_y = 0.0
+        self.last_qpos_x = 0.0
+        self.first_reset = True
         self._hfield_id = -1
 
     def _setup_terrain(self):
@@ -193,6 +195,8 @@ class LeggedRobotEnv(BaseEnv):
         ctrl_signal = torques / motor_gears
 
         self.do_simulation(ctrl_signal, self.frame_skip)
+        self.last_qpos_x = self.data.qpos[0]
+
         observation = self._get_obs()
         self._update_states(action, torques, observation)
         total_reward = self._get_total_reward()
@@ -206,23 +210,24 @@ class LeggedRobotEnv(BaseEnv):
     def reset_model(self):
         if self.config.terrain.enabled and self.terrain_gen:
             if not getattr(self.config, 'test_mode', False):
-                distance_walked = self.data.qpos[0] - self.spawn_x
+                if not self.first_reset:
+                    distance_walked = self.last_qpos_x - self.spawn_x
+                    percentage_walked = distance_walked / self.terrain_gen.cell_length_x
 
-                current_terrain_type = self.config.terrain.terrain_types[self.terrain_row]
-                current_level = self.terrain_levels[current_terrain_type]
+                    current_terrain_type = self.config.terrain.terrain_types[self.terrain_row]
+                    current_level = self.terrain_levels[current_terrain_type]
 
-                percentage_walked = distance_walked / self.terrain_gen.cell_length_x
-
-                if percentage_walked > self.config.terrain.curriculum_promote_fraction:
-                    self.terrain_levels[current_terrain_type] = min(self.config.terrain.num_levels - 1, current_level + 1)
-                elif percentage_walked < self.config.terrain.curriculum_demote_fraction:
-                    self.terrain_levels[current_terrain_type] = max(0, current_level - 1)
+                    if percentage_walked > self.config.terrain.curriculum_promote_fraction:
+                        self.terrain_levels[current_terrain_type] = min(self.config.terrain.num_levels - 1, current_level + 1)
+                    elif percentage_walked < self.config.terrain.curriculum_demote_fraction:
+                        self.terrain_levels[current_terrain_type] = max(0, current_level - 1)
 
                 self.terrain_row = self.np_random.integers(0, len(self.config.terrain.terrain_types))
                 next_terrain_type = self.config.terrain.terrain_types[self.terrain_row]
                 next_level = self.terrain_levels[next_terrain_type]
 
                 self.spawn_x, self.spawn_y = self.terrain_gen.get_spawn_location(self.terrain_row, next_level)
+                self.first_reset = False
             else:
                 self.spawn_x, self.spawn_y = self.terrain_gen.get_spawn_location(0, 0)
 

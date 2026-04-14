@@ -272,7 +272,17 @@ class PPO:
             current_env = current_env.env
 
         if self.is_custom_env:
-            terrain_levels = current_env.get_attr('terrain_levels')[0]
+            terrain_types = current_env.get_attr('config')[0].terrain.terrain_types
+            all_env_levels = current_env.get_attr('terrain_levels')
+            
+            local_avg = {t: 0.0 for t in terrain_types}
+            for env_dict in all_env_levels:
+                for t, level in env_dict.items():
+                    local_avg[t] += level / len(all_env_levels)
+
+            terrain_levels = {t: 0.0 for t in local_avg.keys()}
+            for t in local_avg.keys():
+                terrain_levels[t] = mpi.mpi_avg(local_avg[t])
 
         state = {
             'epoch': epoch,
@@ -309,9 +319,23 @@ class PPO:
             while True:
                 if terrain_levels is not None and not self.test_mode:
                     if hasattr(current_env, 'set_attr'):
-                        current_env.set_attr('terrain_levels', terrain_levels)
-                    if hasattr(current_env, 'terrain_levels'):
-                        current_env.terrain_levels = terrain_levels
+                        # Distribute the population across levels based on the saved average
+                        # e.g., if average is 1.25, 75% of envs start at Level 1, 25% at Level 2
+                        num_envs = self.envs.num_envs
+                        env_levels_list = []
+                        for i in range(num_envs):
+                            env_levels = {}
+                            for t, avg_val in terrain_levels.items():
+                                # We distribute them such that the mean remains correct
+                                # Env index i: if i / num_envs < (avg % 1), we round up
+                                threshold = avg_val % 1
+                                level = int(avg_val) + (1 if (i / num_envs) < threshold else 0)
+                                env_levels[t] = level
+                            env_levels_list.append(env_levels)
+                        
+                        current_env.set_attr('terrain_levels', env_levels_list)
+                    elif hasattr(current_env, 'terrain_levels'):
+                        current_env.terrain_levels = {t: int(v) for t, v in terrain_levels.items()}
 
                 # Restore normalization statistics
                 if 'obs_rms' in checkpoint and hasattr(current_env, 'obs_rms'):
@@ -383,9 +407,18 @@ class PPO:
                 self.logger.log_epoch('entropy', average_only=True)
 
                 if self.is_custom_env:
-                    terrain_levels = get_base_env(self.envs).get_attr('terrain_levels')[0]
-                    for terrain_type, level in terrain_levels.items():
-                        self.logger.log_epoch(f"level-{terrain_type.replace('_', '-')}", level)
+                    base_env = get_base_env(self.envs)
+                    terrain_types = base_env.get_attr('config')[0].terrain.terrain_types
+                    all_env_levels = base_env.get_attr('terrain_levels')
+                    
+                    local_avg = {t: 0.0 for t in terrain_types}
+                    for env_dict in all_env_levels:
+                        for t, level in env_dict.items():
+                            local_avg[t] += level / len(all_env_levels)
+
+                    for t in local_avg.keys():
+                        global_avg = mpi.mpi_avg(local_avg[t])
+                        self.logger.log_epoch(f"level-{t.replace('_', '-')}", global_avg)
 
                 if env_info_dict:
                     for key in env_info_dict.keys():
