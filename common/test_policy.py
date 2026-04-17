@@ -50,6 +50,7 @@ def test(args) -> None:
         env_kwargs = {
             'use_camera': depth_camera_config.get('enabled'),
             'use_privileged': priviledged_config.get('enabled'),
+            'use_grid': getattr(args, 'use_grid', False),
             'lane_terrain_types': terrain_config['lane_terrain_types'],
             'lane_difficulties': terrain_config['lane_difficulties']
         }
@@ -129,6 +130,8 @@ if __name__ == '__main__':
                        help='List of terrain types or "random"')
     parser.add_argument('--difficulties', nargs='*', default=None,
                        help='List of difficulties (0.0 to 1.0) or "random"')
+    parser.add_argument('--use-grid', action='store_true',
+                       help='Force use of the grid map')
     group = parser.add_mutually_exclusive_group()
     group.add_argument('--render', action='store_true',
                        help='Render the agent live')

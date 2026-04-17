@@ -185,13 +185,18 @@ class RMA:
         config_dict['test_mode'] = True
         config = SimpleNamespace(**config_dict)
 
+        env_kwargs = {}
+        if hasattr(config, 'env_config') and 'terrain' in config.env_config:
+            env_kwargs['use_grid'] = config.env_config['terrain'].get('use_grid', False)
+
         env = gym.make_vec(
             config.env,
             num_envs=1,
             vectorization_mode='sync',
             use_camera=True,
             use_privileged=False,
-            render_mode="rgb_array"
+            render_mode="rgb_array",
+            **env_kwargs
         )
         base_env = get_base_env(env, return_vector=False)
 
@@ -267,11 +272,16 @@ def main() -> None:
         model = get_algo_class(config.algo)(config)
         model.load(join(collect_args.log_dir, 'latest.pt'))
 
+        env_kwargs = {}
+        if hasattr(config, 'env_config') and 'terrain' in config.env_config:
+             env_kwargs['use_grid'] = config.env_config['terrain'].get('use_grid', False)
+
         env = gym.make_vec(
             config.env,
             num_envs=1,
             use_camera=True,
-            use_privileged=True
+            use_privileged=True,
+            **env_kwargs
         )
 
         dataset_path = join(collect_args.log_dir, collect_args.out_file)

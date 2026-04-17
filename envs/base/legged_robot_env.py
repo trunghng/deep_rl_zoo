@@ -15,6 +15,7 @@ class LeggedRobotEnv(BaseEnv):
         config,
         use_camera=None,
         use_privileged=None,
+        use_grid=None,
         lane_terrain_types=None,
         lane_difficulties=None,
         **kwargs
@@ -25,6 +26,8 @@ class LeggedRobotEnv(BaseEnv):
             self.config.sensor.depth_camera.enabled = use_camera
         if use_privileged:
             self.config.privileged_info.enabled = use_privileged
+        if use_grid is not None:
+            self.config.terrain.use_grid = use_grid
         if lane_terrain_types is not None:
             self.config.terrain.lane_terrain_types = lane_terrain_types
         if lane_difficulties is not None:
@@ -55,7 +58,9 @@ class LeggedRobotEnv(BaseEnv):
         if self.config.terrain.enabled and self._hfield_id != -1:
             self.terrain_gen = TerrainGenerator(self.model, self._hfield_id, self.config)
 
-            if not getattr(self.config, 'test_mode', False):
+            if getattr(self.config.terrain, 'use_grid', False):
+                self.terrain_gen.generate_grid()
+            elif not getattr(self.config, 'test_mode', False):
                 self.terrain_gen.generate_arena()
             else:
                 self.terrain_gen.generate_lane()
@@ -104,7 +109,10 @@ class LeggedRobotEnv(BaseEnv):
     def _initialize_simulation(self):
         """Overrides Gymnasium's default file loader to build the model in RAM"""
         robot_xml_file = self.config.asset.file_name
-        scene_type = 'lane' if getattr(self.config, 'test_mode', False) else 'arena'
+        if getattr(self.config.terrain, 'use_grid', False):
+            scene_type = 'grid'
+        else:
+            scene_type = 'lane' if getattr(self.config, 'test_mode', False) else 'arena'
         scene_xml_file = f"{scene_type}.xml"
 
         subclass_dir = dirname(abspath(sys.modules[self.__module__].__file__))
@@ -209,7 +217,12 @@ class LeggedRobotEnv(BaseEnv):
 
     def reset_model(self):
         if self.config.terrain.enabled and self.terrain_gen:
-            if not getattr(self.config, 'test_mode', False):
+            if getattr(self.config.terrain, 'use_grid', False):
+                # Pick a random cell in the grid
+                grid_row = self.np_random.integers(0, self.config.terrain.num_grid_rows)
+                grid_col = self.np_random.integers(0, self.config.terrain.num_grid_cols)
+                self.spawn_x, self.spawn_y = self.terrain_gen.get_spawn_location(grid_row, grid_col)
+            elif not getattr(self.config, 'test_mode', False):
                 if not self.first_reset:
                     distance_walked = self.last_qpos_x - self.spawn_x
                     percentage_walked = distance_walked / self.terrain_gen.cell_length_x

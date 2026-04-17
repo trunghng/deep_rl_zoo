@@ -22,7 +22,7 @@ class BipedWalkingConfig(BipedConfig):
 
             # Advanced Physics (Crucial for complex terrain)
             foot_slip = -0.03           # Penalty if the foot moves horizontally while touching the ground
-            stumble = -0.2             # Massive penalty for hitting vertical obstacles (stair lips)
+            stumble = -0.05             # Massive penalty for hitting vertical obstacles (stair lips)
             bounce = -0.1              # Penalty for bouncing (too high prevents climbing hills)
 
             # Safety and Efficiency

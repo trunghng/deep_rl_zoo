@@ -69,7 +69,7 @@ class PPO:
             env_kwargs = {}
             vec_mode = 'async'
             if self.is_custom_env:
-                for key in ['use_camera', 'use_privileged']:
+                for key in ['use_camera', 'use_privileged', 'use_grid']:
                     val = getattr(args, key, None)
                     if val is not None:
                         env_kwargs[key] = val
@@ -501,6 +501,8 @@ if __name__ == '__main__':
                         help='Enable depth camera')
     parser.add_argument('--use-privileged', action='store_true',
                         help='Enable privileged info')
+    parser.add_argument('--use-grid', action='store_true',
+                        help='Enable grid map mode')
     parser.add_argument('--use-wandb', action='store_true',
                         help='Use Weights & Biases logging')
     parser.add_argument('--save', action='store_true',

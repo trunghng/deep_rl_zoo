@@ -30,6 +30,7 @@ class Bipedal(LeggedRobotEnv):
         config=BipedConfig(),
         lane_terrain_types=None,
         lane_difficulties=None,
+        use_grid=None,
         use_camera=None,
         use_privileged=None,
         **kwargs
@@ -38,6 +39,7 @@ class Bipedal(LeggedRobotEnv):
             config=config,
             lane_terrain_types=lane_terrain_types,
             lane_difficulties=lane_difficulties,
+            use_grid=use_grid,
             use_camera=use_camera,
             use_privileged=use_privileged,
             **kwargs
@@ -369,10 +371,7 @@ class Bipedal(LeggedRobotEnv):
     def _reward_foot_velocity(self):
         """Rewards the swing foot for moving forward relative to the torso."""
         reward = 0.0
-        # During swing phase, we want the foot moving forward
         if self.left_phase >= 0.5:
-            # Check velocity of left foot relative to the robot's base velocity
-            # We want the foot to be 'reaching' forward
             rel_vel = self.left_foot_vel[0] - self.lin_vel_x
             reward += np.clip(rel_vel, 0, 1.0)
         if self.right_phase >= 0.5:

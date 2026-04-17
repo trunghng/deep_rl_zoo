@@ -38,19 +38,27 @@ class BaseLeggedConfig(BaseConfig):
         ]
 
         # Physical Dimensions (m) - Treated as maximums scaled by difficulty fraction
-        base_height = 4.0               # Base height of the floor (to allow pits/trenches)
+        base_height = 3.0               # Base height of the floor (to allow pits/trenches)
         roughness = 0.1                 # Maximum height of random bumps
         step_height = 0.2               # Height of each stair step
         step_width = 0.4                # Depth of each stair step
         hill_height = 0.5
         
+        # Grid settings
+        use_grid = False
+        grid_size = 4.0
+        num_grid_rows = 5
+        num_grid_cols = 5
+        grid_feature_margin = 0.1
+        grid_terrain_types = ["pyramid", "inv_pyramid", "mound", "bowl", "rough", "flat"]
+
         # Curriculum settings
-        curriculum_promote_fraction = 0.8
-        curriculum_demote_fraction = 0.4
+        curriculum_promote_fraction = 0.65
+        curriculum_demote_fraction = 0.3
 
         # Other settings
         noise_scale = 0.2               # Downsampling ratio for roughness (higher = more dense)
-        feature_margin = 0.25           # Margin before features start (20% of zone size)
+        feature_margin = 0.4            # Margin before features start (40% of zone size)
 
     class sensor:
 
